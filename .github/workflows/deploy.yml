@@ -17,7 +17,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           script: |
-            cd /var/www/ucup-edu-lib
+            cd /var/www/Perpustakaan
             git pull origin main
             npm install --production
-            pm2 restart ucup-edu-lib
+            pm2 restart Perpustakaan
