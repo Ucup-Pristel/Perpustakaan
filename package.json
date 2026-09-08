@@ -1,0 +1,26 @@
+{
+  "name": "ucup-edu-lib",
+  "version": "1.0.0-alpha",
+  "description": "Perpustakaan Digital Kompas Karier & Minat - Backend API",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "node backend/server.js",
+    "seed": "node scripts/seed-db.js"
+  },
+  "keywords": [
+    "education",
+    "library",
+    "career",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "knex": "^3.3.0",
+    "sqlite3": "^5.1.7"
+  }
+}

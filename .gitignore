@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment — JANGAN commit kredensial
+.env
+.env.local
+.env.*.local
+
+# Database runtime (file SQLite di-generate saat seed, bukan source)
+*.db
+*.sqlite
+*.sqlite3
+
+# Tapi tetap track SQL source files di database/
+!database/schema.sql
+!database/seed_management.sql
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+*.swp
+*.swo
