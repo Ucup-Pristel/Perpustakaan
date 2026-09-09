@@ -6,6 +6,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const auth = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,6 +21,16 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Auth login
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  if (username !== 'admin' || password !== 'admin123') {
+    return res.status(401).json({ status: 'error', message: 'Username atau password salah' });
+  }
+  const token = jwt.sign({ username }, process.env.JWT_SECRET || 'rahasia_perpustakaan_ucup', { expiresIn: '2h' });
+  res.json({ status: 'success', token });
+});
+
 // Mount routes
 const fieldsRouter = require('./routes/fields');
 const subfieldsRouter = require('./routes/subfields');
@@ -26,6 +38,12 @@ const contentsRouter = require('./routes/contents');
 const adminRouter = require('./routes/admin');
 
 app.use('/api/fields', fieldsRouter);
+
+// POST /api/fields — protected
+app.post('/api/fields', auth, (req, res) => {
+  res.json({ status: 'success', message: 'Akses Admin Diberikan. (Logika INSERT SQLite menyusul)' });
+});
+
 app.use('/api/subfields', subfieldsRouter);
 app.use('/api/contents', contentsRouter);
 app.use('/api/admin', adminRouter);

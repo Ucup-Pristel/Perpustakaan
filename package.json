@@ -17,9 +17,11 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.2",
+    "jsonwebtoken": "^9.0.3",
     "knex": "^3.3.0",
     "sqlite3": "^5.1.7"
   }
