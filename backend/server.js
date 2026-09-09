@@ -8,6 +8,7 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const auth = require('./middleware/auth');
+const db = require('./models/db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,8 +41,40 @@ const adminRouter = require('./routes/admin');
 app.use('/api/fields', fieldsRouter);
 
 // POST /api/fields — protected
-app.post('/api/fields', auth, (req, res) => {
-  res.json({ status: 'success', message: 'Akses Admin Diberikan. (Logika INSERT SQLite menyusul)' });
+app.post('/api/fields', auth, async (req, res) => {
+  try {
+    const { slug, name, description, icon, color, sort_order, is_active } = req.body;
+    const [id] = await db('fields').insert({ slug, name, description, icon, color, sort_order, is_active });
+    res.status(201).json({ status: 'success', message: 'Field berhasil ditambahkan', data: { id } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: 'error', message: 'Gagal menambahkan field' });
+  }
+});
+
+// PUT /api/fields/:id — protected
+app.put('/api/fields/:id', auth, async (req, res) => {
+  try {
+    const { slug, name, description, icon, color, sort_order, is_active } = req.body;
+    const count = await db('fields').where('id', req.params.id).update({ slug, name, description, icon, color, sort_order, is_active });
+    if (!count) return res.status(404).json({ status: 'error', message: 'Field tidak ditemukan' });
+    res.json({ status: 'success', message: 'Field berhasil diperbarui' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: 'error', message: 'Gagal memperbarui field' });
+  }
+});
+
+// DELETE /api/fields/:id — protected
+app.delete('/api/fields/:id', auth, async (req, res) => {
+  try {
+    const count = await db('fields').where('id', req.params.id).del();
+    if (!count) return res.status(404).json({ status: 'error', message: 'Field tidak ditemukan' });
+    res.json({ status: 'success', message: 'Field berhasil dihapus' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: 'error', message: 'Gagal menghapus field' });
+  }
 });
 
 app.use('/api/subfields', subfieldsRouter);
