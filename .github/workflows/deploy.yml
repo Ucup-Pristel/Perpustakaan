@@ -20,4 +20,11 @@ jobs:
             cd /home/Perpustakaan/Perpustakaan
             git pull origin main
             npm install --production
+            cd frontend
+            npm install
+            npm run build
+            mkdir -p /var/www/ucup-edu-lib/frontend/dist
+            cp -r dist/. /var/www/ucup-edu-lib/frontend/dist/
+            cd ..
             pm2 restart perpustakaan-api
+
