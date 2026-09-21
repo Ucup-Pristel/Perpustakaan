@@ -1,6 +1,8 @@
 # DOKUMEN TEKNIS: INFRASTRUKTUR & ARSITEKTUR SISTEM
 ## ucup-edu-lib v1.0.0-alpha — Technical Specification
 
+**Terakhir Diperbarui: Senin, 14 September 2026**
+
 ---
 
 ## 1. SPESIFIKASI SERVER (VPS)
@@ -15,664 +17,493 @@
 | **Provider** | IDCloudHost |
 
 ### Catatan Kapasitas
-- Dengan 2GB RAM, hindari stack berat (no Docker swarm, no heavy DB)
-- 20GB storage cukup untuk OS + aplikasi + database metadata (bukan file)
-- File PDF/ebook/media disimpan di object storage eksternal (S3/R2)
+- Dengan 2 GB RAM, hindari stack berat (no Docker swarm, no heavy DB).
+- 20 GB storage cukup untuk OS + aplikasi + database metadata (bukan file media).
+- File PDF/gambar/media disimpan di Cloudflare R2 (object storage eksternal).
 
 ---
 
 ## 2. ARSITEKTUR PENYIMPANAN (Storage Architecture)
 
-### 2.1 Prinsip: "VPS Hanya Menyimpan Teks URL"
+### 2.1 Prinsip: "VPS Hanya Menyimpan URL"
+
 ```
 ┌─────────────────┐      ┌──────────────────┐      ┌─────────────────┐
-│   User Browser  │◄────►│   VPS (2vCPU/2GB)│◄────►│ Cloudflare R2   │
+│   User Browser  │◄────►│   VPS (Node.js)  │◄────►│ Cloudflare R2   │
 │                 │      │                  │      │ (Object Storage)│
-│  - HTML/CSS/JS  │      │  - App Server    │      │                 │
-│  - Pohon Minat  │      │  - Database      │      │  - File PDF     │
-│  - Progress UI  │      │  - Metadata Only │      │  - Ebook EPUB   │
-│                 │      │  - URL Relatif   │      │  - Video/Audio  │
+│  - React SPA    │      │  - Express API   │      │                 │
+│  - PDF Viewer   │      │  - SQLite DB     │      │  pdfs/          │
+│  - Search UI    │      │  - URL only      │      │  covers/        │
 └─────────────────┘      └──────────────────┘      └─────────────────┘
          ▲                                               ▲
-         │                                               │
          └───────────── Direct Download ─────────────────┘
-                    (Signed URL / Public URL)
+                    (Public URL dari R2_PUBLIC_URL)
 ```
 
 ### 2.2 Object Storage: Cloudflare R2
+
 | Aspek | Detail |
 |-------|--------|
 | **Provider** | Cloudflare R2 |
-| **Use Case** | Menyimpan file PDF, EPUB, cover image, media |
-| **Bucket Structure** | `ucup-edu-lib/` |
-| **Akses** | Public read (untuk file open access) atau Signed URL |
-| **Keuntungan** | 0 egress fee, compatible S3 API, gratis 10GB/bulan |
-| **Alternatif** | Amazon S3, Backblaze B2, Wasabi |
+| **Bucket** | `ucup-edu-lib` |
+| **Akses** | Public read (file open access) |
+| **Keuntungan** | 0 egress fee, S3-compatible API, gratis 10 GB/bulan |
 
-### 2.3 Bucket Structure (R2)
+### 2.3 Bucket Structure (R2) — Implementasi Saat Ini
+
 ```
 ucup-edu-lib/
-├── management/
-│   ├── general-business/
-│   │   ├── level1/
-│   │   ├── level2/
-│   │   ├── level3/
-│   │   └── level4/
-│   ├── marketing/
-│   ├── finance-accounting/
-│   ├── human-resources/
-│   ├── operations-supplychain/
-│   ├── information-systems/
-│   ├── tourism-hospitality/
-│   └── entrepreneurship/
-├── engineering/
-├── medical/
-├── arts-design/
-└── [future-fields]/
+├── pdfs/          ← File PDF buku (upload via Admin Backoffice)
+├── covers/        ← Sampul buku / cover image
+└── Computer Engineering/   ← Path lama (legacy, buku seed awal)
 ```
+
+Nama file diacak dengan format `<base>-<timestamp>-<4hex><ext>` untuk mencegah naming collision.
 
 ---
 
-## 3. DATABASE (VPS Local)
+## 3. DATABASE (SQLite — VPS Local)
 
-### 3.1 Database Choice
-| Aspek | Rekomendasi |
-|-------|-------------|
-| **Engine** | SQLite (untuk prototype) atau PostgreSQL (untuk production) |
-| **Alasan SQLite** | Zero-config, file-based, cukup untuk metadata, hemat RAM |
-| **Alasan PostgreSQL** | Skalabilitas, concurrent users, full-text search |
-| **Decision** | **Mulai dengan SQLite**, migrasi ke PostgreSQL saat user > 100 |
+### 3.1 Pilihan Database
 
-### 3.2 Skema Database (Metadata Only)
+| Aspek | Keputusan |
+|-------|-----------|
+| **Engine** | SQLite (prototype → produksi awal) |
+| **Alasan** | Zero-config, file-based, cukup untuk metadata, hemat RAM |
+| **Migrasi** | Ke PostgreSQL saat concurrent user > 1.000 aktif |
+
+Database runtime: `database/ucup-edu-lib.db`. `DB_FILENAME` di `.env` dapat menggantinya.
+
+### 3.2 Skema Database (Aktual — 14 September 2026)
+
 ```sql
--- Tabel: fields (Bidang/Jalur)
-CREATE TABLE fields (
-    id INTEGER PRIMARY KEY,
-    slug TEXT UNIQUE,           -- e.g. "management"
-    name TEXT,                  -- e.g. "Manajemen"
+-- Bidang karier/jurusan
+CREATE TABLE IF NOT EXISTS fields (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug        TEXT UNIQUE,
+    name        TEXT,
     description TEXT,
-    icon TEXT,                  -- emoji atau icon path
-    color TEXT,                 -- hex color
-    sort_order INTEGER,
-    is_active BOOLEAN DEFAULT 1
+    icon        TEXT,
+    color       TEXT,
+    sort_order  INTEGER DEFAULT 0,
+    is_active   BOOLEAN DEFAULT 1
 );
 
--- Tabel: sub_fields (Sub-bidang)
-CREATE TABLE sub_fields (
-    id INTEGER PRIMARY KEY,
-    field_id INTEGER,
-    slug TEXT UNIQUE,           -- e.g. "marketing"
-    name TEXT,                -- e.g. "Manajemen Pemasaran"
+-- Sub-bidang (pohon minat)
+CREATE TABLE IF NOT EXISTS sub_fields (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    field_id    INTEGER,
+    slug        TEXT UNIQUE,
+    name        TEXT,
     description TEXT,
-    parent_id INTEGER,        -- untuk nested sub-bidang
-    sort_order INTEGER,
+    parent_id   INTEGER,
+    sort_order  INTEGER DEFAULT 0,
     FOREIGN KEY (field_id) REFERENCES fields(id)
 );
 
--- Tabel: contents (Konten Perpustakaan)
-CREATE TABLE contents (
-    id INTEGER PRIMARY KEY,
-    sub_field_id INTEGER,
-    title TEXT,
-    author TEXT,
-    description TEXT,
-    level INTEGER CHECK(level BETWEEN 1 AND 4),
-    content_type TEXT,        -- 'pdf', 'epub', 'video', 'article', 'podcast'
-    source_url TEXT,          -- URL asli (Google Scholar, DOAJ, etc.)
-    file_url TEXT,            -- URL ke R2 (jika file di-host)
-    cover_image_url TEXT,     -- URL cover/cover image
-    tags TEXT,                -- JSON array of tags
-    language TEXT,            -- 'id', 'en'
-    page_count INTEGER,       -- untuk buku
-    duration INTEGER,         -- untuk video/audio (detik)
-    difficulty_score INTEGER, -- 1-10 untuk granular
-    is_featured BOOLEAN DEFAULT 0,
-    read_count INTEGER DEFAULT 0,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
+-- Konten perpustakaan
+CREATE TABLE IF NOT EXISTS contents (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    sub_field_id     INTEGER,
+    title            TEXT,
+    author           TEXT,
+    description      TEXT,
+    level            INTEGER CHECK(level BETWEEN 1 AND 4),
+    content_type     TEXT,        -- 'pdf', 'epub', 'video', 'article'
+    source_url       TEXT,
+    file_url         TEXT,        -- URL R2 file PDF (prefix pdfs/)
+    cover_url        TEXT,        -- URL R2 gambar sampul (prefix covers/) ← BARU 14 Sep 2026
+    cover_image_url  TEXT,        -- kolom lama, dipertahankan kompatibilitas
+    tags             TEXT,
+    language         TEXT,
+    page_count       INTEGER,
+    duration         INTEGER,
+    difficulty_score INTEGER,
+    is_featured      BOOLEAN DEFAULT 0,
+    read_count       INTEGER DEFAULT 0,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (sub_field_id) REFERENCES sub_fields(id)
 );
 
--- Tabel: content_paths (Jalur Pembelajaran)
-CREATE TABLE content_paths (
-    id INTEGER PRIMARY KEY,
-    sub_field_id INTEGER,
-    from_content_id INTEGER,
-    to_content_id INTEGER,
-    path_type TEXT,           -- 'sequential', 'branch', 'prerequisite'
-    FOREIGN KEY (sub_field_id) REFERENCES sub_fields(id)
+-- Akun pengguna
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    full_name     TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'member',
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Tabel: user_progress (Disiapkan Untuk Fase 3 saja)
-CREATE TABLE user_progress (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    content_id INTEGER,
-    status TEXT,              -- 'not_started', 'reading', 'completed'
-    progress_percent INTEGER,
-    completed_at TIMESTAMP,
+-- Progress bacaan per pengguna (halaman terakhir dibaca)
+CREATE TABLE IF NOT EXISTS reading_progress (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    content_id INTEGER NOT NULL,
+    last_page  INTEGER NOT NULL DEFAULT 1,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, content_id),
+    FOREIGN KEY (user_id)    REFERENCES users(id),
+    FOREIGN KEY (content_id) REFERENCES contents(id)
+);
+
+-- Catatan per halaman per konten per pengguna
+CREATE TABLE IF NOT EXISTS notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    content_id  INTEGER NOT NULL,
+    page_number INTEGER NOT NULL,
+    note_text   TEXT NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, content_id, page_number),
+    FOREIGN KEY (user_id)    REFERENCES users(id),
+    FOREIGN KEY (content_id) REFERENCES contents(id)
+);
+
+-- Progress lama (dipertahankan — dipakai ContentList & Dashboard summary)
+CREATE TABLE IF NOT EXISTS user_progress (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL,
+    content_id     INTEGER,
+    last_page_read INTEGER NOT NULL DEFAULT 0,
+    status         TEXT NOT NULL DEFAULT 'reading',
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, content_id),
+    FOREIGN KEY (user_id)    REFERENCES users(id),
     FOREIGN KEY (content_id) REFERENCES contents(id)
 );
 ```
 
-### 3.3 Contoh Data (Manajemen Pemasaran)
-```sql
--- Insert Field
-INSERT INTO fields (slug, name, description, color) 
-VALUES ('management', 'Manajemen', 'Jalur karier dalam dunia bisnis dan manajemen', '#2563EB');
-
--- Insert Sub-field
-INSERT INTO sub_fields (field_id, slug, name, description, sort_order)
-VALUES (1, 'marketing', 'Manajemen Pemasaran', 'Strategi, riset pasar, branding, dan digital marketing', 2);
-
--- Insert Content Level 1
-INSERT INTO contents (sub_field_id, title, author, description, level, content_type, source_url, file_url, tags, language)
-VALUES (1, 'Konten Kreator: Rahasia Sukses di Era Digital', 'Rhenald Kasali', 
-        'Buku ringan tentang dunia digital marketing dan konten kreator', 
-        1, 'pdf', '[https://bukugratis.com/konten-kreator](https://bukugratis.com/konten-kreator)', '/management/marketing/level1/konten-kreator.pdf',
-        '["marketing", "digital", "kreator"]', 'id');
-
--- Insert Content Level 4
-INSERT INTO contents (sub_field_id, title, author, description, level, content_type, source_url, file_url, tags, language)
-VALUES (1, 'Consumer Behavior in Digital Age', 'Journal of Marketing', 
-        'Jurnal ilmiah tentang perilaku konsumen di era digital', 
-        4, 'article', '[https://doi.org/10.1509/jm.XX.XX](https://doi.org/10.1509/jm.XX.XX)', NULL,
-        '["consumer-behavior", "digital", "journal"]', 'en');
-```
+### 3.3 Inisialisasi & Migrasi
+- `database/init.js` menjalankan schema.sql secara idempoten, lalu menambah kolom-kolom baru (termasuk `file_url`, `reading_progress`, `notes`, `cover_url`) jika belum ada — aman dijalankan berulang.
+- `backend/models/db.js` pakai Knex. Saat startup, memastikan tabel kritis tersedia.
 
 ---
 
 ## 4. FRAMEWORK & TECH STACK
 
 ### 4.1 Frontend
-| Komponen | Pilihan | Alasan |
-|----------|---------|--------|
-| **Framework** | Vanilla HTML5 + CSS3 + JS | Ringan, no build step, hemat RAM VPS |
-| **CSS** | Tailwind CSS (CDN) | Utility-first, cepat styling, no build |
-| **Icons** | Lucide (CDN) atau Heroicons | SVG, ringan |
-| **Charts/Tree** | D3.js (minimal) atau CSS Tree | Visualisasi pohon minat |
-| **State** | Vanilla JS (localStorage) | Cukup untuk Fase 1 & 2 progress tracking |
 
-### 4.2 Backend (Jika Perlu)
-| Komponen | Pilihan | Alasan |
-|----------|---------|--------|
-| **Runtime** | Node.js + Express | Ringan, JavaScript universal |
-| **Alternative** | Python + Flask/FastAPI | Jika lebih nyaman Python |
-| **Alternative** | PHP + SQLite | Paling hemat resource |
-| **API** | REST JSON | Sederhana, universal |
+| Komponen | Pilihan | Versi |
+|----------|---------|-------|
+| **Framework** | React + Vite | 19 / 8 |
+| **CSS** | Tailwind CSS | 4 |
+| **Icons** | lucide-react | latest |
+| **Routing** | react-router-dom | 7 |
+| **PDF Viewer** | react-pdf | 11 |
+| **State/Auth** | React Context + localStorage | — |
+
+### 4.2 Backend
+
+| Komponen | Pilihan | Versi |
+|----------|---------|-------|
+| **Runtime** | Node.js + Express | 22 / 4 |
+| **DB Query** | Knex.js | 3 |
+| **DB Driver** | sqlite3 | 5 |
+| **Auth** | jsonwebtoken + bcrypt | 9 / 6 |
+| **Upload** | multer (memoryStorage) | latest |
+| **R2 Client** | @aws-sdk/client-s3 | latest |
+| **Search** | fuse.js | latest |
 
 ### 4.3 Deployment
+
 | Komponen | Pilihan |
 |----------|---------|
-| **Web Server** | Nginx (reverse proxy + static file) |
-| **Process Manager** | PM2 (Node.js) atau systemd |
+| **Web Server** | Nginx (reverse proxy + static files) |
+| **Process Manager** | PM2 |
 | **SSL** | Let's Encrypt (certbot) |
-| **Domain** | [Isi domain Anda] |
 
 ---
 
-## 5. STRUKTUR FILE PROYEK
+## 5. STRUKTUR FILE PROYEK (Aktual)
 
 ```
 ucup-edu-lib/
-├── docs/                           # Dokumentasi
-│   ├── PROJECT_CONTEXT.md          # Dokumen konteks bisnis
-│   ├── TECHNICAL_CONTEXT.md        # Dokumen teknis (ini)
-│   └── CHANGELOG.md                # Log perubahan
+├── docs/
+│   ├── PROJECT_CONTEXT.md
+│   └── TECHNICAL_CONTEXT.md
 │
-├── database/                       # Database & seed data
-│   ├── schema.sql                  # Skema database
-│   ├── seed_management.sql         # Data awal bidang Manajemen
-│   └── ucup-edu-lib.db             # File SQLite (production)
+├── database/
+│   ├── schema.sql                # Skema lengkap (idempoten)
+│   ├── init.js                   # Migrasi & seed startup
+│   └── ucup-edu-lib.db           # SQLite runtime
 │
-├── backend/                        # API Server (jika pakai backend)
-│   ├── server.js                   # Entry point Express
-│   ├── routes/
-│   │   ├── admin.js                # API: endpoint terproteksi JWT untuk kelola konten
-│   │   ├── fields.js               # API: daftar bidang
-│   │   ├── subfields.js            # API: daftar sub-bidang
-│   │   ├── contents.js             # API: daftar konten
-│   │   └── progress.js             # API: progress user
+├── backend/
+│   ├── server.js                 # Entry point: health, /api/search, mount routes
+│   ├── helpers/
+│   │   └── queryParser.js        # Kamus sinonim pencarian (Fuse.js interceptor)
+│   ├── middleware/
+│   │   └── auth.js               # JWT verify → req.user.id
 │   ├── models/
-│   │   └── db.js                   # Koneksi database
-│   └── package.json
+│   │   └── db.js                 # Knex SQLite instance
+│   ├── routes/
+│   │   ├── auth.js               # POST /register, POST /login
+│   │   ├── activity.js           # reading-progress, notes, summary (JWT)
+│   │   ├── admin.js              # upload multi-file, daftar & hapus konten (JWT)
+│   │   ├── contents.js           # GET konten (public)
+│   │   ├── fields.js             # GET fields
+│   │   └── subfields.js          # GET sub-fields
+│   └── utils/
+│       └── r2Uploader.js         # S3Client R2, upload buffer → public URL
 │
-├── frontend/                       # Static Website
-│   ├── index.html                  # Homepage: Pohon Minat
-│   ├── jalur/                      # Halaman per jalur
-│   │   ├── management/
-│   │   │   ├── index.html          # Overview Manajemen
-│   │   │   ├── marketing.html      # Detail Pemasaran
-│   │   │   ├── finance.html        # Detail Keuangan
-│   │   │   └── ...
-│   │   └── [future-fields]/
-│   ├── konten/                     # Halaman detail konten
-│   │   └── [content-slug].html
-│   ├── css/
-│   │   ├── main.css                # Styles utama
-│   │   ├── tree.css                # Styles pohon minat
-│   │   └── levels.css              # Styles level tagging
-│   ├── js/
-│   │   ├── main.js                 # Logic utama
-│   │   ├── tree.js                 # Render pohon minat
-│   │   ├── levels.js               # Logic level & progress
-│   │   └── search.js               # Fitur pencarian
-│   └── assets/
-│       ├── images/                 # Logo, icon, banner
-│       └── fonts/                  # Font lokal (jika perlu)
+├── frontend/src/
+│   ├── App.jsx                   # Router + AuthProvider
+│   ├── index.css                 # Tailwind + .field component class
+│   ├── components/
+│   │   ├── Home.jsx              # Homepage
+│   │   └── Navbar.jsx            # Search bar debounce + Enter → /search
+│   ├── context/
+│   │   └── AuthContext.jsx       # user, token, login, logout
+│   └── pages/
+│       ├── Login.jsx
+│       ├── Register.jsx
+│       ├── ContentList.jsx       # Daftar konten per bidang
+│       ├── Reader.jsx            # PDF continuous scroll + progress + notes
+│       ├── Dashboard.jsx         # Rekap terakhir dibaca + koleksi catatan
+│       ├── SearchResults.jsx     # Grid kartu buku portrait dengan cover_url
+│       └── AdminUpload.jsx       # Form upload PDF+cover, tabel konten
 │
-├── scripts/                        # Automation scripts
-│   ├── seed-db.js                  # Script populate database
-│   ├── deploy.sh                   # Script deployment
-│   └── backup.sh                   # Script backup database
+├── scripts/
+│   └── seed-db.js
 │
-├── nginx/                          # Config server
-│   └── ucup-edu-lib.conf           # Virtual host Nginx
+├── nginx/
+│   └── ucup-edu-lib.conf
 │
-└── README.md                       # Quick start guide
+├── SESSION_LOG.md                # Log sesi pengembangan harian
+└── package.json                  # Backend dependencies (root)
 ```
 
 ---
 
-## 6. API ENDPOINTS (Draft)
+## 6. API ENDPOINTS (Implementasi Aktual)
 
-### 6.1 Fields (Bidang)
-```
-GET    /api/fields              → List semua bidang
-GET    /api/fields/:slug        → Detail satu bidang + sub-bidang
-```
+Semua respons: `{ status, data, meta? }` atau `{ status, message }`.
+Endpoint bertanda **[JWT]** butuh header `Authorization: Bearer <token>`.
 
-### 6.2 Sub-fields
+### 6.0 Umum
 ```
-GET    /api/subfields           → List semua sub-bidang
-GET    /api/subfields/:slug     → Detail sub-bidang + konten
-GET    /api/subfields/:slug/contents?level=1,2,3,4 → Filter konten per level
+GET  /api/health                        → Status API + timestamp
+GET  /api/search?q=<kata>               → Fuzzy search (Fuse.js), public
 ```
 
-### 6.3 Contents (Public - Read)
+### 6.1 Auth
 ```
-GET    /api/contents            → List semua konten (with pagination)
-GET    /api/contents/:id        → Detail konten
-GET    /api/contents/search?q=marketing&level=2 → Search
-```
-### 6.4 Admin Contents (Protected by JWT)
-```
-POST   /api/contents            → Tambah buku/jurnal baru
-PUT    /api/contents/:id        → Update data konten
-DELETE /api/contents/:id        → Hapus konten
+POST /api/auth/register                 → email, password, full_name
+POST /api/auth/login                    → email, password → JWT token
 ```
 
-### 6.5 Progress
-**Catatan Fase 1 & 2:** Progress murni disimpan di `localStorage` browser. API `/api/progress` di bawah ini baru dibangun di Fase 3.
-```http
-POST   /api/progress            → Update progress bacaan
-GET    /api/progress/:user_id   → Riwayat progress user
+### 6.2 Fields & Sub-fields
+```
+GET  /api/fields                        → List semua bidang
+GET  /api/fields/:slug                  → Detail bidang + sub-bidang
+GET  /api/subfields                     → List semua sub-bidang
+GET  /api/subfields/:slug               → Detail + konten
+```
+
+### 6.3 Contents (Public)
+```
+GET  /api/contents                      → List semua konten
+GET  /api/contents/:id                  → Detail konten (termasuk file_url, cover_url)
+```
+
+### 6.4 Admin [JWT]
+```
+GET    /api/admin/contents              → Semua konten + thumbnail cover
+POST   /api/admin/upload                → multipart: pdf (file), cover (file), metadata
+DELETE /api/admin/contents/:id          → Hapus konten
+```
+
+### 6.5 Activity [JWT]
+```
+GET  /api/activity/reading-progress/:content_id   → last_page
+POST /api/activity/reading-progress               → { content_id, last_page } — upsert
+GET  /api/activity/notes/:content_id?page_number= → catatan halaman spesifik
+POST /api/activity/notes                          → { content_id, page_number, note_text } — upsert
+GET  /api/activity/summary                        → recent_reads + my_notes
 ```
 
 ---
 
-## 7. ENVIRONMENT VARIABLES
+## 7. SMART SEARCH ENGINE
 
-Buat file `.env` di root backend:
+### 7.1 Alur
+1. Request `GET /api/search?q=<query>`
+2. `queryParser.js` mencocokkan query ke kamus sinonim (case-insensitive):
+   - `s1 tk` → `s1 teknik komputer`
+   - `it` → `teknologi informasi`
+   - `computer` → `komputer`
+   - `programming` → `pemrograman`
+   - `algorithm` → `algoritma`
+   - `network` → `jaringan`
+   - `database` → `basis data`
+   - `machine learning` → `pembelajaran mesin`
+3. Fuse.js mencari di kolom `title`, `author`, `description` (enriched dengan `sub_field_name` + `field_name`).
+4. Search dijalankan dua kali: raw query + parsed query; hasil di-dedup by ID.
 
+### 7.2 Konfigurasi Fuse.js
+```js
+{
+  keys: ['title', 'author', 'description'],
+  threshold: 0.4,
+  ignoreLocation: true,
+  distance: 100,
+}
+```
+
+`ignoreLocation: true` — typo di posisi manapun dalam string tetap terdeteksi.
+
+---
+
+## 8. UPLOAD MULTI-FILE KE R2
+
+### 8.1 Alur Upload
+```
+POST /api/admin/upload  (multipart/form-data)
+  ├── pdf    → multer memoryStorage → uploadToR2(buffer, name, 'pdfs')   → file_url
+  └── cover  → multer memoryStorage → uploadToR2(buffer, name, 'covers') → cover_url
+                                                ↓
+                                     INSERT INTO contents
+```
+
+### 8.2 Naming Convention
+```
+pdfs/<judul_bersih>-<Date.now()>-<4hex>.pdf
+covers/<judul_bersih>-<Date.now()>-<4hex>.jpg
+```
+
+Karakter selain `a-zA-Z0-9_-. ` dihapus; spasi diganti `_`; nama dibatasi 60 karakter; suffix acak mencegah overwrite.
+
+### 8.3 MIME Map (`r2Uploader.js`)
+```
+.pdf  → application/pdf
+.jpg  → image/jpeg
+.jpeg → image/jpeg
+.png  → image/png
+.webp → image/webp
+.gif  → image/gif
+```
+
+---
+
+## 9. READER PDF — ARSITEKTUR
+
+### 9.1 Rendering
+- `react-pdf` v11, PDF.js worker dari CDN/node_modules.
+- `Array.from({length: numPages})` render semua halaman secara vertikal (continuous scroll).
+- Lazy render: hanya halaman `activePage ± 2` yang render kanvas; sisanya placeholder.
+- `ResizeObserver` mengukur wrapper → `containerWidth - 32px` → `<Page width={containerWidth}>`.
+
+### 9.2 Progress Tracking
+- `GET /api/activity/reading-progress/:id` saat PDF dimuat → scroll ke `last_page`.
+- `IntersectionObserver` threshold 0.5 → update `activePage` saat halaman ≥ 50% terlihat.
+- Debounce 600 ms → `POST /api/activity/reading-progress`.
+
+### 9.3 Catatan per Halaman
+- Setiap perubahan `activePage` → `GET /api/activity/notes/:id?page_number=N`.
+- Tombol "Simpan Catatan" → `POST /api/activity/notes` (upsert).
+
+---
+
+## 10. KONFIGURASI PORT & ENVIRONMENT
+
+### 10.1 Port
+| Service | Port | Catatan |
+|---------|------|---------|
+| Backend Node.js | **3000** | Default `PORT=3000` di `.env` |
+| Frontend Vite (dev) | 5173 | Proxy `/api` → `http://127.0.0.1:3000` |
+| Hermes AI Proxy | 3101 | Jangan pakai port ini untuk backend |
+
+Port 3000 ditetapkan sebagai standar backend untuk menghindari tabrakan dengan proxy AI di 3101.
+
+### 10.2 Environment Variables (`.env`)
 ```bash
 # Server
 PORT=3000
-NODE_ENV=production
+NODE_ENV=development
 
 # Database
-DB_PATH=./database/ucup-edu-lib.db
-
-# Cloudflare R2 (Object Storage)
-R2_ACCOUNT_ID=your_account_id
-R2_ACCESS_KEY_ID=your_access_key
-R2_SECRET_ACCESS_KEY=your_secret_key
-R2_BUCKET_NAME=ucup-edu-lib
-R2_PUBLIC_URL=https://pub-[hash].r2.dev
-
-# Security
-JWT_SECRET=your_random_secret_key
-SESSION_SECRET=another_random_secret
-
-# Domain
-DOMAIN=[Belum ada domain — beli setelah website jadi]
-```
-
----
-
-## 8. CHECKLIST DEPLOYMENT
-
-### 8.1 VPS Setup
-- [v] Install Ubuntu 24.04 LTS
-- [v] Update & upgrade: `apt update && apt upgrade`
-- [v] Install Nginx: `apt install nginx`
-- [v] Install Node.js 20+: `curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -`
-- [v] Install PM2: `npm install -g pm2`
-- [v] Install Certbot: `apt install certbot python3-certbot-nginx`
-- [v] Setup firewall (UFW): `ufw allow 'Nginx Full'`
-
-### 8.2 R2 Setup
-- [v] Buat akun Cloudflare
-- [v] Aktifkan R2 di dashboard
-- [v] Buat bucket `ucup-edu-lib`
-- [v] Generate API token (S3-compatible)
-- [v] Upload file PDF ke bucket
-- [v] Setup public access atau signed URL
-
-### 8.3 Aplikasi Setup
-- [ ] Clone repo ke VPS
-- [ ] Install dependencies: `npm install`
-- [ ] Buat file `.env`
-- [ ] Jalankan seed database: `node scripts/seed-db.js`
-- [ ] Test API: `node backend/server.js`
-- [ ] Setup PM2: `pm2 start backend/server.js --name ucup-edu-lib`
-- [ ] Setup Nginx reverse proxy
-- [ ] Setup SSL dengan Certbot
-- [ ] Test akses dari browser
-
----
-
-## 9. OPTIMASI VPS (2vCPU/2GB)
-
-### 9.1 Nginx Config (ucup-edu-lib.conf)
-```nginx
-server {
-    listen 80;
-    server_name perpustakaan-karier.id www.perpustakaan-karier.id;
-
-    # Redirect ke HTTPS
-    return 301 https://$server_name$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name perpustakaan-karier.id;
-
-    ssl_certificate /etc/letsencrypt/live/perpustakaan-karier.id/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/perpustakaan-karier.id/privkey.pem;
-
-    # Static files (frontend)
-    location / {
-        root /var/www/ucup-edu-lib/frontend;
-        try_files $uri $uri/ /index.html;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-    }
-
-    # API (backend)
-    location /api/ {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    # File dari R2 (proxy untuk signed URL)
-    location /files/ {
-        proxy_pass https://pub-[hash].r2.dev/;
-        proxy_set_header Host pub-[hash].r2.dev;
-    }
-
-    # Gzip compression
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript;
-}
-```
-
-### 9.2 PM2 Config (ecosystem.config.js)
-```javascript
-module.exports = {
-  apps: [{
-    name: 'ucup-edu-lib',
-    script: './backend/server.js',
-    instances: 1,           // Hanya 1 instance karena 2GB RAM
-    exec_mode: 'fork',
-    env: {
-      NODE_ENV: 'production',
-      PORT: 3000
-    },
-    max_memory_restart: '512M',  // Restart jika memori > 512MB
-    log_file: './logs/combined.log',
-    out_file: './logs/out.log',
-    error_file: './logs/error.log',
-    time: true
-  }]
-};
-```
-
-### 9.3 Swap Memory (Jika RAM penuh)
-```bash
-# Buat 2GB swap
-sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-# Tambahkan ke /etc/fstab untuk persistent
-```
-
----
-
-## 10. SKALABILITAS & PERSIAPAN MASA DEPAN
-
-> **Prinsip:** Migrasi dari 10 siswa → 10.000 siswa harus seamless. Persiapan fondasi SEKARANG menentukan apakah migrasi nanti menyakitkan atau mudah.
-
-### 10.1 Roadmap Skalabilitas
-
-| Fase | Jumlah Siswa | VPS | Database | Stack | Estimasi Biaya/Bulan |
-|------|-------------|-----|----------|-------|---------------------|
-| **Fase 1: Prototype** | 10–100 | 2vCPU / 2GB | SQLite | PM2 + Nginx + Vanilla JS | **$5–10** |
-| **Fase 2: Growth** | 100–1.000 | 2vCPU / 4GB | SQLite | PM2 + Nginx + Cache | **$10–15** |
-| **Fase 3: Scale** | 1.000–5.000 | 4vCPU / 8GB | PostgreSQL | PM2 + Nginx + PostgreSQL | **$20–30** |
-| **Fase 4: Massive** | 5.000–10.000 | 2× VPS 4GB + LB | PostgreSQL + Redis | Load Balancer + 2 App Server | **$50–70** |
-| **Fase 5: Enterprise** | 10.000+ | 3× VPS + CDN | Managed DB + Redis | Full Cloud Architecture | **$100–200** |
-
-### 10.2 Mengapa SQLite Cukup untuk Fase 1–2
-
-SQLite sangat cepat untuk **read-heavy workload** (perpustakaan = 90% read, 10% write):
-- Bisa handle **ribuan read request/detik**
-- Zero overhead (tidak butuh service terpisah)
-- Tidak butuh RAM tambahan
-
-**Bottleneck pertama bukan database — tapi bandwidth R2** (file PDF yang diunduh siswa).
-
-### 10.3 Kapan Wajib Migrasi ke PostgreSQL
-
-| Kondisi | Action |
-|---------|--------|
-| **> 1.000 user aktif bersamaan** | SQLite mulai lock saat write progress. Migrasi ke PostgreSQL. |
-| **Fitur user account & progress sync** | Butuh concurrent write. PostgreSQL wajib. |
-| **Tim developer > 1 orang** | PostgreSQL lebih mudah di-manage dan di-backup. |
-| **Butuh full-text search** | PostgreSQL + `pg_trgm` atau `tsvector` lebih powerful. |
-
-### 10.4 Persiapan Fondasi SEKARANG (Agar Migrasi Tidak Menyakitkan)
-
-#### A. Gunakan Abstraksi Database (ORM/Query Builder)
-
-Gunakan **Knex.js** atau **Sequelize** sejak sekarang. Ganti client = ganti 1 baris config:
-
-```javascript
-const knex = require('knex')({
-  client: 'sqlite3',        // SEKARANG
-  // client: 'pg',          // NANTI — tinggal uncomment
-  connection: {
-    filename: './database/ucup-edu-lib.db'
-    // host: 'localhost',   // NANTI untuk PostgreSQL
-    // database: 'ucup_edu',
-    // user: 'admin',
-    // password: 'secret'
-  },
-  useNullAsDefault: true    // Penting untuk kompatibilitas SQLite → PostgreSQL
-});
-```
-
-**Jangan tulis query SQLite-specific** seperti `PRAGMA`, `strftime()`, atau `AUTOINCREMENT`.
-
-#### B. Pisahkan Config dari Kode (`.env`)
-
-Semua yang bisa berubah saat migrasi harus di `.env`:
-
-```bash
-# Database — SEKARANG
 DB_CLIENT=sqlite3
 DB_FILENAME=./database/ucup-edu-lib.db
 
-# Database — NANTI (tinggal ganti)
-# DB_CLIENT=pg
-# DB_HOST=localhost
-# DB_PORT=5432
-# DB_DATABASE=ucup_edu
-# DB_USER=admin
-# DB_PASSWORD=secret
+# Cloudflare R2
+R2_ACCOUNT_ID=<account_id>
+R2_ACCESS_KEY_ID=<access_key>
+R2_SECRET_ACCESS_KEY=<secret_key>
+R2_BUCKET_NAME=ucup-edu-lib
+R2_PUBLIC_URL=https://pub-<hash>.r2.dev
 
-# Object Storage — SEKARANG (R2)
-R2_PUBLIC_URL=https://pub-xxx.r2.dev
+# Security
+JWT_SECRET=<random_secret>
 
-# Object Storage — NANTI (S3 atau R2 lain)
-# R2_PUBLIC_URL=https://ucup-edu-lib.s3.ap-southeast-1.amazonaws.com
+# Domain
+DOMAIN=http://localhost:5173
+VITE_API_URL=http://localhost:3000/api
 ```
-
-#### C. Jangan Simpan State di Memory
-
-❌ **JANGAN:**
-```javascript
-// Hilang saat server restart
-const activeUsers = {};
-const sessionCache = new Map();
-```
-
-✅ **LAKUKAN:**
-```javascript
-// Persisten di database
-await db('user_sessions').insert({ user_id, token, expires_at });
-```
-
-#### D. API Response Format Konsisten
-
-Gunakan format JSON yang sama sejak sekarang — jangan ganti-ganti nanti:
-
-```json
-{
-  "status": "success",
-  "data": { ... },
-  "meta": {
-    "page": 1,
-    "limit": 20,
-    "total": 150,
-    "total_pages": 8
-  }
-}
-```
-
-#### E. R2 URL Harus Configurable (Frontend / Backend Synthesis)
-
-Jangan pernah hardcode URL Cloudflare R2 di database. Gabungkan dengan variabel lingkungan hanya saat API mengirim data:
-
-```javascript
-// ❌ JANGAN simpan URL lengkap di database
-
-// ✅ LAKUKAN
-const fullFileUrl = `${process.env.R2_PUBLIC_URL}${dbRecord.file_url}`;
-```
-
-### 10.5 Migrasi SQLite → PostgreSQL (Step-by-Step)
-
-Saat tiba waktunya (Fase 3), lakukan ini:
-
-1. **Export SQLite:**
-   ```bash
-   sqlite3 ucup-edu-lib.db .dump > dump.sql
-   ```
-
-2. **Convert syntax** (auto dengan tool):
-   ```bash
-   npm install -g sqlite-to-postgres
-   sqlite-to-postgres dump.sql > dump-pg.sql
-   ```
-
-3. **Import ke PostgreSQL:**
-   ```bash
-   psql -U admin -d ucup_edu < dump-pg.sql
-   ```
-
-4. **Ganti `.env`:**
-   ```bash
-   DB_CLIENT=pg
-   DB_HOST=localhost
-   DB_DATABASE=ucup_edu
-   ```
-
-5. **Restart PM2:**
-   ```bash
-   pm2 restart ucup-edu-lib
-   ```
-
-**Total downtime: < 5 menit** — kalau fondasi sudah benar.
-
-### 10.6 Migrasi 1 VPS → Load Balancer (Fase 4)
-
-```
-SEKARANG (1 VPS):
-┌─────────────────┐
-│   VPS 2GB RAM   │
-│  Nginx + App    │
-│  SQLite         │
-└─────────────────┘
-
-NANTI (2 VPS + LB):
-┌──────────┐     ┌─────────────┐     ┌─────────────┐
-│ Cloudflare│────►│  VPS #1     │     │  VPS #2     │
-│  LB / CDN │     │  Nginx + App│     │  Nginx + App│
-└──────────┘     └─────────────┘     └─────────────┘
-                        │                    │
-                        └────────┬───────────┘
-                                 ▼
-                        ┌─────────────────┐
-                        │  VPS #3 (4GB)   │
-                        │  PostgreSQL     │
-                        │  + Redis        │
-                        └─────────────────┘
-```
-
-**Yang perlu diubah:**
-- Nginx config: tambahkan `upstream` ke 2 app server
-- `.env`: `DB_HOST` ubah ke IP VPS database
-- Session: pakai Redis (shared antar VPS) atau JWT (stateless)
 
 ---
 
-## 11. BACKUP STRATEGI
+## 11. SKALABILITAS & MIGRASI
 
-| Data | Lokasi | Backup Frequency | Method |
-|------|--------|------------------|--------|
-| Database (SQLite) | VPS `/database/` | Harian | `sqlite3 .backup` + rsync |
-| File R2 | Cloudflare R2 | - | R2 lifecycle rules |
-| Source Code | GitHub/GitLab | Per commit | Git push |
-| Config | VPS `/etc/nginx/` | Mingguan | Manual copy |
+### 11.1 Roadmap Skala
+
+| Fase | Pengguna | Database | Estimasi Biaya/Bulan |
+|------|----------|----------|----------------------|
+| Prototype | 10–100 | SQLite | $5–10 |
+| Growth | 100–1.000 | SQLite | $10–15 |
+| Scale | 1.000–5.000 | PostgreSQL | $20–30 |
+| Massive | 5.000–10.000 | PostgreSQL + Redis + LB | $50–70 |
+
+### 11.2 Migrasi SQLite → PostgreSQL
+Ganti satu baris di `.env`: `DB_CLIENT=pg` + tambah `DB_HOST`, `DB_DATABASE`, dll. Knex menangani sisanya. Total downtime < 5 menit jika fondasi sudah benar.
+
+### 11.3 Prinsip Fondasi (Sudah Diterapkan)
+- Semua query lewat Knex — tidak ada SQL SQLite-specific.
+- Semua config di `.env` — tidak ada hardcode URL atau secret.
+- Semua file media di R2 — VPS hanya menyimpan URL.
+- Response format `{ status, data, meta }` konsisten di seluruh endpoint.
 
 ---
 
-## 12. CATATAN PENGEMBANGAN TEKNIS
+## 12. BACKUP STRATEGI
+
+| Data | Lokasi | Frekuensi | Method |
+|------|--------|-----------|--------|
+| Database SQLite | VPS `database/` | Harian | `sqlite3 .backup` + rsync |
+| File R2 | Cloudflare R2 | — | R2 lifecycle rules |
+| Source Code | GitHub | Per commit | git push |
+| Config Nginx | VPS `/etc/nginx/` | Mingguan | Manual copy |
+
+---
+
+## 13. CATATAN PENGEMBANGAN TEKNIS
 
 | Tanggal | Versi | Perubahan |
 |---------|-------|-----------|
-| 2026-08-30 | v1.0.0-alpha | Dokumen teknis awal. Arsitektur: VPS 2vCPU/2GB + R2. Database: SQLite. Frontend: Vanilla JS. |
+| 2026-08-30 | v1.0.0-alpha | Dokumen teknis awal. VPS 2vCPU/2GB + R2. SQLite. Frontend Vanilla JS. |
+| 2026-09-13 | v1.0.2-alpha | Frontend React/Vite, proxy `/api` → port 3000, AuthContext JWT, Reader PDF, progress & catatan. |
+| 2026-09-14 | v1.0.3-alpha | Smart Search (Fuse.js + queryParser), Admin Backoffice (multer multi-file + R2 prefix pdfs/covers/), `cover_url` di SQLite, SearchResults grid portrait, port 3000 ditetapkan standar. |
 
 ---
 
-## 13. INSTRUKSI AI ASSISTANT (CLINE)
+## 14. INSTRUKSI AI ASSISTANT
 
-Saat dokumen ini di-upload kembali di sesi baru, AI harus:
-1. Membaca dan memahami arsitektur sistem (VPS Node.js + SQLite REST API + Cloudflare R2).
-2. Mengingat bahwa **file PDF/media disimpan di R2, bukan VPS**
-3. Mengingat bahwa **database hanya menyimpan metadata & URL relatif**
-4. Tidak membuat fungsionalitas Backend untuk Progress Tracking sampai Fase 3 tiba (gunakan LocalStorage di Frontend).
-5. Tidak menyarankan stack berat (Docker, Kubernetes, heavy DB) karena keterbatasan VPS 2GB.
-6. Selalu merancang endpoint POST/PUT untuk admin yang dilindungi oleh JWT.
+Saat dokumen ini dibaca di sesi baru, AI harus:
+1. Memahami arsitektur: VPS Node.js + SQLite REST API + Cloudflare R2.
+2. **File PDF/media → R2**, bukan disk VPS.
+3. **Database hanya menyimpan URL** (file_url, cover_url).
+4. Progress dan catatan aktif via `/api/activity` dengan JWT — pertahankan kontrak ini.
+5. Jangan sarankan stack berat (Docker, Kubernetes, heavy ORM) untuk VPS 2 GB.
+6. Endpoint admin selalu dilindungi middleware `auth`.
+7. Search: Fuse.js + `queryParser.js` — bukan SQL LIKE.
+8. Port backend wajib 3000; jangan pakai 3101 (dipakai proxy Hermes AI).
+9. Upload file: multer `memoryStorage` → buffer → `uploadToR2()` → URL disimpan ke SQLite.
 
 ---
 
 *Dokumen ini adalah Living Document. Update sesuai perkembangan infrastruktur.*
-*Dibuat: 30 Agustus 2026*
+*Dibuat: 30 Agustus 2026 — Diperbarui: 14 September 2026*
 *Proyek: Perpustakaan Digital Kompas Karier & Minat*
+
+

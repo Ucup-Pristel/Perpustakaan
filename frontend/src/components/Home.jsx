@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChevronRight, Layers, BookMarked, AlertTriangle } from 'lucide-react'
+import { API_URL } from '../lib/api'
 
 // --- Skeleton ---
 function SkeletonCard() {
@@ -53,7 +55,7 @@ function ErrorBanner({ message }) {
 function FieldCard({ field }) {
   const color = field.color ?? '#92400e'
   return (
-    <div className="bg-white rounded-xl border border-orange-100 shadow-sm hover:shadow-md transition-shadow p-4 flex flex-col gap-2">
+    <Link to={`/field/${field.id}`} className="block bg-white rounded-xl border border-orange-100 shadow-sm hover:shadow-md transition-shadow p-4 flex flex-col gap-2 focus:outline-none focus:ring-2 focus:ring-amber-500">
       <div className="flex items-start gap-2">
         <Layers className="w-4 h-4 mt-0.5 shrink-0" style={{ color }} />
         <h4 className="font-semibold text-gray-800 text-sm leading-snug flex items-center gap-1.5 flex-wrap">
@@ -78,7 +80,7 @@ function FieldCard({ field }) {
           {field.is_active ? 'Aktif' : 'Nonaktif'}
         </span>
       </div>
-    </div>
+    </Link>
   )
 }
 
@@ -89,7 +91,7 @@ export default function Home() {
   const [error, setError]     = useState(null)
 
   useEffect(() => {
-    fetch('/api/fields')
+    fetch(`${API_URL}/api/fields`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`)
         return r.json()

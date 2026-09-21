@@ -3,18 +3,35 @@
  * REST API untuk Perpustakaan Digital Kompas Karier & Minat
  */
 
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const jwt = require('jsonwebtoken');
 const auth = require('./middleware/auth');
+const { isAdmin } = require('./middleware/auth');
 const db = require('./models/db');
+const { deleteFromR2 } = require('./utils/r2Uploader');
+const Fuse = require('fuse.js');
+const queryParser = require('./helpers/queryParser');
+const { globalLimiter } = require('./middleware/rateLimiters');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware dasar
-app.use(cors());
+app.use(helmet());
+const allowedOrigins = (process.env.FRONTEND_URL || 'https://edulib.id,https://www.edulib.id')
+  .split(',')
+  .map(o => o.trim());
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error('Not allowed by CORS'));
+  },
+}));
+app.use(globalLimiter);
 app.use(express.json());
 
 // Health check
@@ -22,26 +39,64 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Auth login
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
-  if (username !== 'admin' || password !== 'admin123') {
-    return res.status(401).json({ status: 'error', message: 'Username atau password salah' });
+// GET /api/search?q=...
+app.get('/api/search', async (req, res) => {
+  try {
+    // queryParser mengembalikan varian query (asli + hasil substitusi sinonim
+    // dua arah, mis. "computer" -> juga coba "komputer"). Ini menutup gap
+    // typo-tolerance Fuse.js yang cuma efektif untuk salah ketik, bukan kata
+    // yang beda total (computer vs komputer bukan typo, tapi sinonim istilah).
+    const queryVariants = queryParser(req.query.q);
+    if (!queryVariants.length) return res.status(400).json({ status: 'error', message: 'Parameter q diperlukan' });
+
+    const contents = await db('contents as content')
+      .leftJoin('sub_fields as subfield', 'content.sub_field_id', 'subfield.id')
+      .leftJoin('fields as field', 'subfield.field_id', 'field.id')
+      .whereNotNull('content.title')
+      .select('content.id', 'content.title', 'content.author', 'content.description', 'content.level', 'content.content_type', 'subfield.name as sub_field_name', 'field.name as field_name');
+    const searchable = contents.map(content => ({
+      ...content,
+      description: [content.description, content.sub_field_name, content.field_name].filter(Boolean).join(' '),
+    }));
+    const fuse = new Fuse(searchable, {
+      keys: ['title', 'author', 'description'],
+      threshold: 0.4,
+      ignoreLocation: true,
+      distance: 100,
+      includeScore: true,
+    });
+
+    // Cari tiap varian, simpan skor terbaik per item (skor lebih kecil = lebih relevan di Fuse).
+    const best = new Map();
+    for (const term of queryVariants) {
+      for (const { item, score } of fuse.search(term)) {
+        const prev = best.get(item.id);
+        if (!prev || score < prev.score) best.set(item.id, { item, score });
+      }
+    }
+    const results = [...best.values()].sort((a, b) => a.score - b.score).map(r => r.item);
+
+    res.json({ status: 'success', data: results, meta: { query: queryVariants[0], total: results.length } });
+  } catch (err) {
+    console.error('[search]', err);
+    res.status(500).json({ status: 'error', message: 'Gagal mencari konten' });
   }
-  const token = jwt.sign({ username }, process.env.JWT_SECRET || 'rahasia_perpustakaan_ucup', { expiresIn: '2h' });
-  res.json({ status: 'success', token });
 });
 
 // Mount routes
-const fieldsRouter = require('./routes/fields');
+const authRouter      = require('./routes/auth');
+const activityRouter  = require('./routes/activity');
+const fieldsRouter    = require('./routes/fields');
 const subfieldsRouter = require('./routes/subfields');
 const contentsRouter = require('./routes/contents');
 const adminRouter = require('./routes/admin');
 
+app.use('/api/auth', authRouter);
+app.use('/api/activity', activityRouter);
 app.use('/api/fields', fieldsRouter);
 
 // POST /api/fields — protected
-app.post('/api/fields', auth, async (req, res) => {
+app.post('/api/fields', auth, isAdmin, async (req, res) => {
   try {
     const { slug, name, description, icon, color, sort_order, is_active } = req.body;
     const [id] = await db('fields').insert({ slug, name, description, icon, color, sort_order, is_active });
@@ -53,7 +108,7 @@ app.post('/api/fields', auth, async (req, res) => {
 });
 
 // PUT /api/fields/:id — protected
-app.put('/api/fields/:id', auth, async (req, res) => {
+app.put('/api/fields/:id', auth, isAdmin, async (req, res) => {
   try {
     const { slug, name, description, icon, color, sort_order, is_active } = req.body;
     const count = await db('fields').where('id', req.params.id).update({ slug, name, description, icon, color, sort_order, is_active });
@@ -66,7 +121,7 @@ app.put('/api/fields/:id', auth, async (req, res) => {
 });
 
 // DELETE /api/fields/:id — protected
-app.delete('/api/fields/:id', auth, async (req, res) => {
+app.delete('/api/fields/:id', auth, isAdmin, async (req, res) => {
   try {
     const count = await db('fields').where('id', req.params.id).del();
     if (!count) return res.status(404).json({ status: 'error', message: 'Field tidak ditemukan' });
@@ -80,7 +135,7 @@ app.delete('/api/fields/:id', auth, async (req, res) => {
 app.use('/api/subfields', subfieldsRouter);
 
 // POST /api/subfields — protected
-app.post('/api/subfields', auth, async (req, res) => {
+app.post('/api/subfields', auth, isAdmin, async (req, res) => {
   try {
     const { field_id, slug, name, description, parent_id, sort_order } = req.body;
     const [id] = await db('sub_fields').insert({ field_id, slug, name, description, parent_id, sort_order });
@@ -92,7 +147,7 @@ app.post('/api/subfields', auth, async (req, res) => {
 });
 
 // PUT /api/subfields/:id — protected
-app.put('/api/subfields/:id', auth, async (req, res) => {
+app.put('/api/subfields/:id', auth, isAdmin, async (req, res) => {
   try {
     const { field_id, slug, name, description, parent_id, sort_order } = req.body;
     const count = await db('sub_fields').where('id', req.params.id).update({ field_id, slug, name, description, parent_id, sort_order });
@@ -105,7 +160,7 @@ app.put('/api/subfields/:id', auth, async (req, res) => {
 });
 
 // DELETE /api/subfields/:id — protected
-app.delete('/api/subfields/:id', auth, async (req, res) => {
+app.delete('/api/subfields/:id', auth, isAdmin, async (req, res) => {
   try {
     const count = await db('sub_fields').where('id', req.params.id).del();
     if (!count) return res.status(404).json({ status: 'error', message: 'Sub-bidang tidak ditemukan' });
@@ -119,10 +174,10 @@ app.delete('/api/subfields/:id', auth, async (req, res) => {
 app.use('/api/contents', contentsRouter);
 
 // POST /api/contents — protected
-app.post('/api/contents', auth, async (req, res) => {
+app.post('/api/contents', auth, isAdmin, async (req, res) => {
   try {
-    const { sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_image_url, tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at } = req.body;
-    const [id] = await db('contents').insert({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_image_url, tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at });
+    const { sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at } = req.body;
+    const [id] = await db('contents').insert({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at });
     res.status(201).json({ status: 'success', message: 'Konten berhasil ditambahkan', data: { id } });
   } catch (err) {
     console.error(err);
@@ -131,10 +186,10 @@ app.post('/api/contents', auth, async (req, res) => {
 });
 
 // PUT /api/contents/:id — protected
-app.put('/api/contents/:id', auth, async (req, res) => {
+app.put('/api/contents/:id', auth, isAdmin, async (req, res) => {
   try {
-    const { sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_image_url, tags, language, page_count, duration, difficulty_score, is_featured, updated_at } = req.body;
-    const count = await db('contents').where('id', req.params.id).update({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_image_url, tags, language, page_count, duration, difficulty_score, is_featured, updated_at });
+    const { sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, updated_at } = req.body;
+    const count = await db('contents').where('id', req.params.id).update({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, updated_at });
     if (!count) return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
     res.json({ status: 'success', message: 'Konten berhasil diperbarui' });
   } catch (err) {
@@ -144,10 +199,16 @@ app.put('/api/contents/:id', auth, async (req, res) => {
 });
 
 // DELETE /api/contents/:id — protected
-app.delete('/api/contents/:id', auth, async (req, res) => {
+app.delete('/api/contents/:id', auth, isAdmin, async (req, res) => {
   try {
-    const count = await db('contents').where('id', req.params.id).del();
-    if (!count) return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
+    const row = await db('contents').where('id', req.params.id).first('file_url', 'cover_url');
+    if (!row) return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
+
+    // Hapus file fisik di R2 dulu — kalau gagal (bukan 404), jangan lanjut hapus baris DB
+    await deleteFromR2(row.file_url);
+    await deleteFromR2(row.cover_url);
+
+    await db('contents').where('id', req.params.id).del();
     res.json({ status: 'success', message: 'Konten berhasil dihapus' });
   } catch (err) {
     console.error(err);

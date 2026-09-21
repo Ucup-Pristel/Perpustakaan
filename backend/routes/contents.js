@@ -13,30 +13,42 @@ const r2Base = () => process.env.R2_PUBLIC_URL || '';
 
 const formatContent = (c) => ({
   ...c,
-  file_url: c.file_url ? `${r2Base()}${c.file_url}` : null,
+  file_url: c.file_url ? (/^https?:\/\//.test(c.file_url) ? c.file_url : `${r2Base()}${c.file_url}`) : null,
   tags: c.tags ? JSON.parse(c.tags) : [],
 });
 
-// GET /api/contents?page=1&limit=20
+// GET /api/contents?page=1&limit=20&field_id=2
 router.get('/', async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page)  || 1);
     const limit = Math.min(100, parseInt(req.query.limit) || 20);
     const offset = (page - 1) * limit;
+    const fieldId = req.query.field_id ? Number(req.query.field_id) : null;
 
-    const [{ total }] = await db('contents').count('id as total');
-    const contents = await db('contents')
-      .orderBy(['level', 'id'])
-      .limit(limit)
-      .offset(offset);
+    if (fieldId !== null && (!Number.isInteger(fieldId) || fieldId < 1)) {
+      return res.status(400).json({ status: 'error', message: 'field_id tidak valid' });
+    }
+
+    const base = () => {
+      const query = db('contents');
+      if (fieldId !== null) {
+        query.join('sub_fields', 'contents.sub_field_id', 'sub_fields.id')
+          .where('sub_fields.field_id', fieldId)
+          .select('contents.*');
+      }
+      return query;
+    };
+
+    const [{ total }] = await base().clearSelect().clearOrder().countDistinct('contents.id as total');
+    const contents = await base().orderBy(['contents.level', 'contents.id']).limit(limit).offset(offset);
 
     res.json({
       status: 'success',
       data: contents.map(formatContent),
-      meta: { page, limit, total: Number(total), total_pages: Math.ceil(total / limit) },
+      meta: { page, limit, total: Number(total), total_pages: Math.ceil(Number(total) / limit) },
     });
   } catch (err) {
-    console.error(err);
+    console.error('[contents:list]', err);
     res.status(500).json({ status: 'error', message: 'Gagal mengambil konten' });
   }
 });
