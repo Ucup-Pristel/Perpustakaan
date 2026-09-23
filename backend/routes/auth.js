@@ -8,10 +8,16 @@ const router = require('express').Router();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../models/db');
-const { authLimiter } = require('../middleware/rateLimiters');
+const { authLimiter, registerLimiter } = require('../middleware/rateLimiters');
 
 const SECRET = () => process.env.JWT_SECRET;
 const SALT_ROUNDS = 10;
+
+// Hash bcrypt asli (cost 10, sama dengan SALT_ROUNDS) dari password acak yang
+// tidak dipakai siapa pun. Dibandingkan saat email tidak ditemukan supaya biaya
+// waktu login sama antara "email tidak ada" dan "password salah".
+// Cost HARUS sama dengan SALT_ROUNDS — kalau beda, selisih waktunya kembali.
+const DUMMY_HASH = '$2b$10$AAjhIKVkdWH7HdQvLXMpxuH5UUEofARafJb0nXkMHRPbvcZZwWoPm';
 
 // Helper: trim string atau return '' jika bukan string
 const str = v => (typeof v === 'string' ? v.trim() : '');
@@ -20,7 +26,7 @@ const str = v => (typeof v === 'string' ? v.trim() : '');
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // POST /api/auth/register
-router.post('/register', async (req, res) => {
+router.post('/register', registerLimiter, async (req, res) => {
   try {
     const email = str(req.body.email).toLowerCase();
     const password = str(req.body.password);
@@ -70,13 +76,19 @@ router.post('/login', authLimiter, async (req, res) => {
     }
 
     const user = await db('users').where({ email }).first();
-    if (!user) {
-      return res.status(401).json({ status: 'error', message: 'Email tidak terdaftar' });
-    }
 
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) {
-      return res.status(401).json({ status: 'error', message: 'Password salah' });
+    // Pesan seragam untuk "email tidak ada" dan "password salah".
+    // Dulu dibedakan ('Email tidak terdaftar' vs 'Password salah'), sehingga
+    // siapa pun bisa menyisir daftar email yang punya akun di sini.
+    //
+    // bcrypt.compare tetap dijalankan walau user tidak ada, memakai hash dummy.
+    // Tanpa ini responsnya balik jauh lebih cepat saat email tidak terdaftar,
+    // dan selisih waktu itu sendiri sudah membocorkan jawabannya.
+    const hashToCompare = user ? user.password_hash : DUMMY_HASH;
+    const valid = await bcrypt.compare(password, hashToCompare);
+
+    if (!user || !valid) {
+      return res.status(401).json({ status: 'error', message: 'Email atau password salah' });
     }
 
     const token = jwt.sign(

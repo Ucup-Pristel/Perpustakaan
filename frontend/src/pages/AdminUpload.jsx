@@ -4,16 +4,10 @@ import { BookOpen, ImagePlus, Loader2, Trash2, UploadCloud } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { apiFetch } from '../lib/api'
 
-const SUB_FIELDS = [
-  { id: 1,  name: 'Pemasaran',                field: 'Manajemen' },
-  { id: 2,  name: 'Sumber Daya Manusia',       field: 'Manajemen' },
-  { id: 3,  name: 'Rekayasa Perangkat Lunak',  field: 'Teknologi' },
-  { id: 4,  name: 'Ilmu Data',                 field: 'Teknologi' },
-  { id: 5,  name: 'Kedokteran Umum',           field: 'Kesehatan' },
-  { id: 6,  name: 'Pendidikan Anak Usia Dini', field: 'Pendidikan' },
-  { id: 7,  name: 'Desain Grafis',             field: 'Seni & Kreativitas' },
-  { id: 8,  name: 'Teknik Komputer',           field: 'Teknologi' },
-]
+// Daftar sub-bidang TIDAK di-hardcode lagi: ID di sini dulu ditebak (1-8) dan
+// dikirim apa adanya ke server. Setelah reseed/migration, ID bisa bergeser,
+// jadi upload bisa masuk kategori yang salah. Sekarang diambil dari
+// /api/subfields, dan backend juga memverifikasi ID-nya benar-benar ada.
 
 const LEVELS = [
   { value: 1, label: 'Pemula' },
@@ -37,6 +31,7 @@ export default function AdminUpload() {
   const [toast,       setToast]       = useState(null)
   const [contents,    setContents]    = useState([])
   const [listLoading, setListLoading] = useState(true)
+  const [subFields,   setSubFields]   = useState([])
 
   // Dideklarasikan SEBELUM pemakaian pertama (loadContents di bawah).
   // Function declaration memang di-hoist, tapi urutan terbalik memicu warning
@@ -61,6 +56,20 @@ export default function AdminUpload() {
   }
 
   useEffect(() => { loadContents() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sub-bidang diambil dari server, bukan daftar hardcoded. Publik, jadi tanpa token.
+  useEffect(() => {
+    const controller = new AbortController()
+    let cancelled = false
+    apiFetch('/api/subfields', { signal: controller.signal })
+      .then(json => { if (!cancelled) setSubFields(json.data || []) })
+      .catch(err => {
+        if (!cancelled && err.name !== 'AbortError') {
+          showToast('err', `Gagal memuat daftar sub-bidang: ${err.message}`)
+        }
+      })
+    return () => { cancelled = true; controller.abort() }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function set(key) { return e => setForm(prev => ({ ...prev, [key]: e.target.value })) }
 
@@ -178,9 +187,11 @@ export default function AdminUpload() {
           <div>
             <label className="block text-xs font-semibold text-amber-800 mb-1">Bidang / Sub-bidang</label>
             <select value={form.sub_field_id} onChange={set('sub_field_id')} className="field">
-              <option value="">— Pilih Sub-bidang —</option>
-              {SUB_FIELDS.map(sf => (
-                <option key={sf.id} value={sf.id}>{sf.field} → {sf.name}</option>
+              <option value="">
+                {subFields.length ? '— Pilih Sub-bidang —' : '— Memuat sub-bidang… —'}
+              </option>
+              {subFields.map(sf => (
+                <option key={sf.id} value={sf.id}>{sf.field_name} → {sf.name}</option>
               ))}
             </select>
           </div>

@@ -63,9 +63,20 @@ app.get('/api/search', async (req, res) => {
       .leftJoin('sub_fields as subfield', 'content.sub_field_id', 'subfield.id')
       .leftJoin('fields as field', 'subfield.field_id', 'field.id')
       .whereNotNull('content.title')
-      .select('content.id', 'content.title', 'content.author', 'content.description', 'content.level', 'content.content_type', 'subfield.name as sub_field_name', 'field.name as field_name');
+      // cover_url/file_url/source_url ikut diambil: tanpa cover_url kartu hasil
+      // pencarian tidak pernah menampilkan sampul, dan tanpa file_url frontend
+      // tidak bisa tahu konten mana yang benar-benar bisa dibuka di reader.
+      .select('content.id', 'content.title', 'content.author', 'content.description', 'content.level', 'content.content_type', 'content.cover_url', 'content.file_url', 'content.source_url', 'subfield.name as sub_field_name', 'field.name as field_name');
+
+    // Sama seperti formatContent di routes/contents.js: cek skema dulu, kalau
+    // tidak URL absolut baru diprefix R2 — kalau tidak, jadi dobel prefix.
+    const r2 = process.env.R2_PUBLIC_URL || '';
+    const toUrl = (v) => (v ? (/^https?:\/\//.test(v) ? v : `${r2}${v}`) : null);
+
     const searchable = contents.map(content => ({
       ...content,
+      cover_url: toUrl(content.cover_url),
+      file_url: toUrl(content.file_url),
       description: [content.description, content.sub_field_name, content.field_name].filter(Boolean).join(' '),
     }));
     const fuse = new Fuse(searchable, {

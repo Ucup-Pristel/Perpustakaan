@@ -4,11 +4,13 @@ import { BookOpen, Loader2, SearchX } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 
 function BookCard({ item }) {
-  return (
-    <Link
-      to={`/read/${item.id}`}
-      className="group flex flex-col rounded-2xl border border-amber-100 bg-white shadow-sm hover:shadow-md hover:border-amber-300 overflow-hidden transition"
-    >
+  // Reader hanya sanggup membuka PDF yang punya file_url. Dulu setiap kartu
+  // menaut ke /read/:id, jadi ebook tanpa file dibuka lalu langsung error.
+  const readable = item.content_type === 'pdf' && item.file_url
+  const cardClass = 'group flex flex-col rounded-2xl border border-amber-100 bg-white shadow-sm overflow-hidden transition'
+
+  const body = (
+    <>
       {/* Cover */}
       <div className="w-full aspect-[3/4] bg-amber-50 overflow-hidden">
         {item.cover_url
@@ -28,7 +30,37 @@ function BookCard({ item }) {
           {item.level != null && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">Level {item.level}</span>}
         </div>
       </div>
-    </Link>
+    </>
+  )
+
+  if (readable) {
+    return (
+      <Link to={`/read/${item.id}`} className={`${cardClass} hover:shadow-md hover:border-amber-300`}>
+        {body}
+      </Link>
+    )
+  }
+
+  // Bukan PDF / tanpa file: arahkan ke sumber eksternal bila ada, kalau tidak
+  // tampilkan kartu non-klik supaya pengguna tidak masuk reader lalu kena error.
+  if (item.source_url) {
+    return (
+      <a
+        href={item.source_url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${cardClass} hover:shadow-md hover:border-amber-300`}
+      >
+        {body}
+      </a>
+    )
+  }
+
+  return (
+    <div className={cardClass} aria-disabled="true">
+      {body}
+      <p className="px-4 pb-4 text-center text-xs text-gray-500">Materi belum tersedia</p>
+    </div>
   )
 }
 
