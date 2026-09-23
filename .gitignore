@@ -20,6 +20,9 @@ logs/
 *.log
 npm-debug.log*
 
+# CodeGraph index
+.codegraph/
+
 # OS artifacts
 .DS_Store
 Thumbs.db

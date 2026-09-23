@@ -20,6 +20,10 @@ const { globalLimiter } = require('./middleware/rateLimiters');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Di belakang Nginx: pakai X-Forwarded-For hop pertama supaya req.ip = IP klien asli
+// (tanpa ini semua klien terlihat sebagai 127.0.0.1 dan rate limiter jadi global)
+app.set('trust proxy', 1);
+
 // Middleware dasar
 app.use(helmet());
 const allowedOrigins = (process.env.FRONTEND_URL || 'https://edulib.id,https://www.edulib.id')

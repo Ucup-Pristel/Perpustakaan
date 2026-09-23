@@ -75,7 +75,7 @@ router.get('/:slug/contents', async (req, res) => {
     const r2Base = process.env.R2_PUBLIC_URL || '';
     const data = contents.map(c => ({
       ...c,
-      file_url: c.file_url ? `${r2Base}${c.file_url}` : null,
+      file_url: c.file_url ? (/^https?:\/\//.test(c.file_url) ? c.file_url : `${r2Base}${c.file_url}`) : null,
       tags: c.tags ? JSON.parse(c.tags) : [],
     }));
 
