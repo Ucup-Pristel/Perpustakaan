@@ -224,15 +224,30 @@ router.post(
     try {
       if (!coverFile) return res.status(400).json({ status: 'error', message: 'File cover diperlukan' });
 
+      // Mimetype berasal dari client dan bisa dipalsukan — cek magic bytes,
+      // sama seperti /upload. Tanpa ini file apa pun bisa masuk bucket dengan
+      // hanya menyetel Content-Type: image/png.
+      if (!verifySignature(coverFile.path, FIELD_MIMES.cover)) {
+        return res.status(400).json({ status: 'error', message: 'Cover bukan JPG/PNG yang valid' });
+      }
+
       const existing = await db('contents').where('id', req.params.id).first('id', 'cover_url');
       if (!existing) return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
 
       const coverUrl = await uploadToR2(coverFile.path, coverFile.originalname, 'covers');
 
-      await db('contents').where('id', req.params.id).update({
-        cover_url: coverUrl,
-        updated_at: new Date().toISOString(),
-      });
+      try {
+        await db('contents').where('id', req.params.id).update({
+          cover_url: coverUrl,
+          updated_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        // DB gagal setelah file masuk R2: buang object baru itu, kalau tidak
+        // bucket menyimpan file yang tidak direferensikan baris mana pun.
+        await deleteFromR2(coverUrl).catch(e =>
+          console.error('[admin/cover] rollback R2 gagal:', coverUrl, e.message));
+        throw err;
+      }
 
       // Hapus cover lama di R2 (best-effort, tidak boleh gagalkan response sukses)
       if (existing.cover_url) {

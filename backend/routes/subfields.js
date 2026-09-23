@@ -8,6 +8,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../models/db');
+const { formatContent } = require('../helpers/contentUrls');
 
 // GET /api/subfields
 router.get('/', async (req, res) => {
@@ -71,13 +72,10 @@ router.get('/:slug/contents', async (req, res) => {
 
     const contents = await query;
 
-    // Gabungkan R2 URL — sesuai § 10.4.E: jangan hardcode di DB
-    const r2Base = process.env.R2_PUBLIC_URL || '';
-    const data = contents.map(c => ({
-      ...c,
-      file_url: c.file_url ? (/^https?:\/\//.test(c.file_url) ? c.file_url : `${r2Base}${c.file_url}`) : null,
-      tags: c.tags ? JSON.parse(c.tags) : [],
-    }));
+    // Gabungkan R2 URL — sesuai § 10.4.E: jangan hardcode di DB.
+    // Pakai helper bersama: versi lokal di sini pernah dobel-prefix file_url dan
+    // tidak pernah memprefix cover_url sama sekali.
+    const data = contents.map(formatContent);
 
     res.json({ status: 'success', data, meta: { total: data.length } });
   } catch (err) {

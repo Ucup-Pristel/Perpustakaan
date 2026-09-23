@@ -32,6 +32,9 @@ export default function AdminUpload() {
   const [contents,    setContents]    = useState([])
   const [listLoading, setListLoading] = useState(true)
   const [subFields,   setSubFields]   = useState([])
+  // id konten yang sedang menunggu upload cover — dipakai untuk menonaktifkan
+  // tombol baris itu saja, bukan seluruh tabel.
+  const [coverBusyId, setCoverBusyId] = useState(null)
 
   // Dideklarasikan SEBELUM pemakaian pertama (loadContents di bawah).
   // Function declaration memang di-hoist, tapi urutan terbalik memicu warning
@@ -105,6 +108,24 @@ export default function AdminUpload() {
       showToast('err', err.message || 'Upload gagal.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Memakai POST /api/admin/contents/:id/cover yang sudah ada di backend tapi
+  // belum pernah dipanggil dari mana pun. Cover lama di R2 dihapus oleh backend.
+  async function handleReplaceCover(id, file) {
+    if (!file) return
+    setCoverBusyId(id)
+    try {
+      const fd = new FormData()
+      fd.append('cover', file)
+      await apiFetch(`/api/admin/contents/${id}/cover`, { method: 'POST', token, body: fd })
+      showToast('ok', 'Sampul diperbarui.')
+      loadContents()
+    } catch (err) {
+      showToast('err', err.message || 'Gagal memperbarui sampul')
+    } finally {
+      setCoverBusyId(null)
     }
   }
 
@@ -261,9 +282,46 @@ export default function AdminUpload() {
                     <td className="py-2 pr-4 text-gray-600 text-xs">{c.sub_field_name || '—'}</td>
                     <td className="py-2 pr-4"><span className="uppercase text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{c.content_type || '—'}</span></td>
                     <td className="py-2">
-                      <button onClick={() => handleDelete(c.id, c.title)} className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {/* <label> membungkus input file tersembunyi: memberi area
+                            klik yang bisa difokus tanpa perlu ref per baris.
+                            value direset setelah pilih supaya memilih file yang
+                            sama dua kali tetap memicu onChange. */}
+                        <label
+                          className={`p-1.5 rounded-lg transition ${
+                            coverBusyId === c.id
+                              ? 'text-amber-300 cursor-wait'
+                              : 'text-amber-500 hover:bg-amber-50 hover:text-amber-700 cursor-pointer'
+                          }`}
+                          title={c.cover_url ? 'Ganti sampul' : 'Tambah sampul'}
+                        >
+                          {coverBusyId === c.id
+                            ? <Loader2 className="w-4 h-4 animate-spin" />
+                            : <ImagePlus className="w-4 h-4" />}
+                          <span className="sr-only">
+                            {c.cover_url ? `Ganti sampul ${c.title}` : `Tambah sampul ${c.title}`}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png"
+                            className="hidden"
+                            disabled={coverBusyId === c.id}
+                            onChange={e => {
+                              const f = e.target.files[0] || null
+                              e.target.value = ''
+                              handleReplaceCover(c.id, f)
+                            }}
+                          />
+                        </label>
+                        <button
+                          onClick={() => handleDelete(c.id, c.title)}
+                          className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition"
+                          title="Hapus konten"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span className="sr-only">Hapus {c.title}</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

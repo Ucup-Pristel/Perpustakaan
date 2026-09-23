@@ -112,7 +112,20 @@ export default function ContentList() {
               return (
                 <article key={content.id} className="bg-white rounded-2xl border border-orange-100 shadow-sm p-5 flex flex-col hover:shadow-md transition-shadow">
                   <div className="flex items-start gap-3">
-                    <div className="p-2 rounded-xl bg-amber-100 text-amber-700"><BookOpen size={20} /></div>
+                    {/* Cover kalau ada; kalau tidak, tetap ikon seperti sebelumnya.
+                        loading/decoding async: satu halaman bisa memuat belasan
+                        cover sekaligus dan tidak boleh memblokir render kartu. */}
+                    {content.cover_url ? (
+                      <img
+                        src={content.cover_url}
+                        alt={`Sampul ${content.title}`}
+                        loading="lazy"
+                        decoding="async"
+                        className="h-16 w-11 shrink-0 rounded-lg object-cover shadow-sm"
+                      />
+                    ) : (
+                      <div className="p-2 rounded-xl bg-amber-100 text-amber-700"><BookOpen size={20} /></div>
+                    )}
                     <div className="min-w-0"><h2 className="font-bold text-amber-900 leading-snug">{content.title}</h2><p className="text-xs text-amber-600 mt-1">{content.author || 'Materi ucup-edu-lib'}</p></div>
                   </div>
                   <p className="text-sm text-gray-600 leading-relaxed mt-4 flex-1">{content.description || 'Materi pembelajaran untuk memperluas wawasanmu.'}</p>

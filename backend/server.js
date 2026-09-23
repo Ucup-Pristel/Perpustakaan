@@ -15,6 +15,7 @@ const db = require('./models/db');
 const { deleteFromR2 } = require('./utils/r2Uploader');
 const Fuse = require('fuse.js');
 const queryParser = require('./helpers/queryParser');
+const { toPublicUrl } = require('./helpers/contentUrls');
 const { globalLimiter } = require('./middleware/rateLimiters');
 
 const app = express();
@@ -32,13 +33,50 @@ app.set('trust proxy', 1);
 
 // Middleware dasar
 app.use(helmet());
-const allowedOrigins = (process.env.FRONTEND_URL || 'https://edulib.id,https://www.edulib.id')
-  .split(',')
-  .map(o => o.trim());
+// FRONTEND_URL di VPS sempat hanya berisi apex (https://edulib.id), sementara
+// apex dan www dua-duanya melayani situs tanpa redirect. Akibatnya login dan
+// register GAGAL total untuk siapa pun yang membuka www.edulib.id. Varian
+// www/apex diturunkan otomatis supaya konfigurasi yang kurang satu varian tidak
+// memutus autentikasi — bukan pelonggaran: hanya host yang sudah di-whitelist
+// yang diperluas, domain lain tetap ditolak.
+const expandWwwVariants = (origins) => {
+  const out = new Set();
+  for (const o of origins) {
+    out.add(o);
+    out.add(o.replace(/^(https?:\/\/)www\./, '$1'));
+    out.add(o.replace(/^(https?:\/\/)(?!www\.)/, '$1www.'));
+  }
+  return [...out];
+};
+
+const allowedOrigins = expandWwwVariants(
+  (process.env.FRONTEND_URL || 'https://edulib.id,https://www.edulib.id')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean),
+);
+
+// Dev server Vite jalan di localhost dengan port yang bisa berubah, dan Vite
+// meneruskan header Origin apa adanya saat mem-proxy /api. Tanpa pengecualian
+// ini, `npm run dev` selalu ditolak CORS kecuali FRONTEND_URL diubah manual.
+// Hanya aktif kalau NODE_ENV !== 'production' — di VPS, NODE_ENV=production
+// WAJIB diset supaya jalur ini mati.
+const allowDevOrigin = process.env.NODE_ENV !== 'production';
+const isLocalhost = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
+
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error('Not allowed by CORS'));
+    if (!origin) return callback(null, true); // curl, server-to-server, health check
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (allowDevOrigin && isLocalhost(origin)) return callback(null, true);
+
+    // JANGAN lempar Error di sini. Error jatuh ke error handler dan dibalas 500,
+    // yang di browser tampak seperti "tidak dapat menghubungi server" — sebab
+    // aslinya (origin ditolak) tersembunyi total. callback(null, false) membuat
+    // header CORS tidak dikirim, jadi browser yang memblokir, dan preflight
+    // gagal dengan wajar tanpa mencemari log dengan 500 palsu.
+    console.warn('[cors] origin ditolak:', origin);
+    return callback(null, false);
   },
 }));
 app.use(globalLimiter);
@@ -68,15 +106,16 @@ app.get('/api/search', async (req, res) => {
       // tidak bisa tahu konten mana yang benar-benar bisa dibuka di reader.
       .select('content.id', 'content.title', 'content.author', 'content.description', 'content.level', 'content.content_type', 'content.cover_url', 'content.file_url', 'content.source_url', 'subfield.name as sub_field_name', 'field.name as field_name');
 
-    // Sama seperti formatContent di routes/contents.js: cek skema dulu, kalau
-    // tidak URL absolut baru diprefix R2 — kalau tidak, jadi dobel prefix.
-    const r2 = process.env.R2_PUBLIC_URL || '';
-    const toUrl = (v) => (v ? (/^https?:\/\//.test(v) ? v : `${r2}${v}`) : null);
-
+    // Pakai helper bersama (helpers/contentUrls.js) supaya aturan prefix R2
+    // sama dengan /api/contents dan /api/subfields — versi lokal di sini
+    // gampang drift lagi.
+    // Dua field di-prefix eksplisit, bukan lewat formatContent: query di atas
+    // tidak men-select `tags`, jadi formatContent akan menambah `tags: []` yang
+    // sebelumnya tidak pernah ada di response search.
     const searchable = contents.map(content => ({
       ...content,
-      cover_url: toUrl(content.cover_url),
-      file_url: toUrl(content.file_url),
+      cover_url: toPublicUrl(content.cover_url),
+      file_url: toPublicUrl(content.file_url),
       description: [content.description, content.sub_field_name, content.field_name].filter(Boolean).join(' '),
     }));
     const fuse = new Fuse(searchable, {

@@ -9,7 +9,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../models/db');
 
-const r2Base = () => process.env.R2_PUBLIC_URL || '';
+// formatContent dipindah ke helpers/contentUrls.js — logikanya dipakai juga oleh
+// subfields.js dan /api/search, dan versi terpisah sudah pernah drift (cover_url
+// tidak ikut di-prefix, file_url pernah dobel-prefix).
+const { formatContent } = require('../helpers/contentUrls');
 
 // Math.min(100, parseInt('-1')) = -1, dan SQLite menganggap `LIMIT -1` = tanpa
 // batas — caller bisa menarik seluruh tabel. Validasi harus menolak eksplisit,
@@ -20,12 +23,6 @@ const parseIntInRange = (raw, { min, max, fallback }) => {
   const n = Number(raw);
   return Number.isInteger(n) && n >= min && n <= max ? n : null;
 };
-
-const formatContent = (c) => ({
-  ...c,
-  file_url: c.file_url ? (/^https?:\/\//.test(c.file_url) ? c.file_url : `${r2Base()}${c.file_url}`) : null,
-  tags: c.tags ? JSON.parse(c.tags) : [],
-});
 
 // GET /api/contents?page=1&limit=20&field_id=2
 router.get('/', async (req, res) => {
