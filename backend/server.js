@@ -20,9 +20,15 @@ const { globalLimiter } = require('./middleware/rateLimiters');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Di belakang Nginx: pakai X-Forwarded-For hop pertama supaya req.ip = IP klien asli
-// (tanpa ini semua klien terlihat sebagai 127.0.0.1 dan rate limiter jadi global)
-app.set('trust proxy', true);
+// Percaya TEPAT satu hop (Nginx), bukan `true`.
+// `true` = percaya semua proxy: klien bisa mengarang X-Forwarded-For, req.ip jadi
+// palsu, dan authLimiter (5 login/15m) bisa dilewati dengan memutar IP.
+// express-rate-limit menolak `true` dengan ERR_ERL_PERMISSIVE_TRUST_PROXY.
+// Angka 1 hanya aman kalau Node TIDAK bisa dihubungi langsung dari internet —
+// karena itu server bind ke loopback di bawah, dan Nginx wajib memakai
+// `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` (append, bukan
+// menimpa dengan nilai kiriman klien).
+app.set('trust proxy', 1);
 
 // Middleware dasar
 app.use(helmet());
@@ -233,9 +239,19 @@ app.use((err, req, res, next) => {
   res.status(500).json({ status: 'error', message: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`[ucup-edu-lib] API running on http://localhost:${PORT}`);
-});
+// Hanya listen kalau file ini dijalankan langsung (`node backend/server.js`).
+// Sebelumnya listen berjalan saat module di-require, jadi `node --test` mewarisi
+// listener yang tidak pernah ditutup dan proses test menggantung selamanya.
+if (require.main === module) {
+  // Bind ke loopback secara default. `trust proxy: 1` hanya aman kalau satu-satunya
+  // yang bisa menghubungi Node adalah Nginx — kalau port ini terbuka ke internet,
+  // klien bisa mengirim X-Forwarded-For sendiri dan memalsukan req.ip.
+  // Override lewat HOST=0.0.0.0 hanya untuk container yang sudah punya batas jaringan.
+  const HOST = process.env.HOST || '127.0.0.1';
+  app.listen(PORT, HOST, () => {
+    console.log(`[ucup-edu-lib] API running on http://${HOST}:${PORT}`);
+  });
+}
 
 module.exports = app;
 

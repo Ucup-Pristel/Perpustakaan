@@ -6,7 +6,11 @@
   "scripts": {
     "start": "node backend/server.js",
     "dev": "node backend/server.js",
-    "seed": "node scripts/seed-db.js"
+    "seed": "node scripts/seed-db.js",
+    "migrate": "knex migrate:latest",
+    "migrate:rollback": "knex migrate:rollback",
+    "migrate:status": "knex migrate:status",
+    "test": "node --test test/"
   },
   "keywords": [
     "education",
@@ -28,6 +32,6 @@
     "jsonwebtoken": "^9.0.3",
     "knex": "^3.3.0",
     "multer": "^2.3.0",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^6.0.1"
   }
 }

@@ -10,6 +10,13 @@ node_modules/
 *.db
 *.sqlite
 *.sqlite3
+# WAL/SHM: journal_mode=WAL bikin dua file pendamping di samping .db
+*.db-wal
+*.db-shm
+
+# Backup DB — `*.db` TIDAK mencakup .db.gz, jadi harus disebut sendiri.
+# Berisi data pengguna (email, password hash); jangan pernah masuk repo.
+backups/
 
 # Tapi tetap track SQL source files di database/
 !database/schema.sql

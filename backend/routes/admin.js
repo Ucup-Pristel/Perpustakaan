@@ -22,13 +22,48 @@ fs.mkdirSync(TMP_DIR, { recursive: true });
 
 const diskFilename = (req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(16).slice(2)}${path.extname(file.originalname)}`);
 
+// Mimetype per FIELD, bukan satu daftar gabungan. Sebelumnya filter yang sama
+// dipakai untuk 'pdf' dan 'cover', jadi JPEG bisa dikirim sebagai field 'pdf'
+// dan tersimpan dengan content_type 'pdf' — konten rusak di reader.
+const FIELD_MIMES = {
+  pdf: ['application/pdf'],
+  cover: ['image/jpeg', 'image/png'],
+};
+
+// Signature/magic bytes — mimetype berasal dari client dan bisa dipalsukan.
+const SIGNATURES = {
+  'application/pdf': [Buffer.from('%PDF-')],
+  'image/jpeg': [Buffer.from([0xff, 0xd8, 0xff])],
+  'image/png': [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+};
+
+// Baca beberapa byte awal dan cocokkan dengan signature yang diizinkan.
+function verifySignature(filePath, allowedMimes) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const head = Buffer.alloc(8);
+    const read = fs.readSync(fd, head, 0, 8, 0);
+    return allowedMimes.some((m) =>
+      (SIGNATURES[m] || []).some((sig) => read >= sig.length && head.subarray(0, sig.length).equals(sig)),
+    );
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Error yang harus jadi 400, bukan 500. Ditandai lewat properti — error handler
+// di bawah TIDAK boleh mencocokkan teks pesan, karena pesan berubah dan
+// mismatch-nya diam-diam mengubah 400 jadi 500.
+const badFile = (message) => Object.assign(new Error(message), { status: 400 });
+
 const upload = multer({
   storage: multer.diskStorage({ destination: TMP_DIR, filename: diskFilename }),
   limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB per file
   fileFilter: (req, file, cb) => {
-    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error(`Tipe file tidak didukung: ${file.mimetype}`));
+    const allowed = FIELD_MIMES[file.fieldname];
+    if (!allowed) return cb(badFile(`Field file tidak dikenal: ${file.fieldname}`));
+    if (allowed.includes(file.mimetype)) return cb(null, true);
+    cb(badFile(`Field ${file.fieldname} menolak tipe ${file.mimetype}`));
   },
 });
 
@@ -37,9 +72,8 @@ const coverUpload = multer({
   storage: multer.diskStorage({ destination: TMP_DIR, filename: diskFilename }),
   limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png'];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error(`Format cover harus jpg/jpeg/png, diterima: ${file.mimetype}`));
+    if (FIELD_MIMES.cover.includes(file.mimetype)) cb(null, true);
+    else cb(badFile(`Format cover harus jpg/png, diterima: ${file.mimetype}`));
   },
 });
 
@@ -88,37 +122,88 @@ router.post(
     try {
       if (!pdfFile) return res.status(400).json({ status: 'error', message: 'File PDF diperlukan' });
 
+      // Mimetype bisa dipalsukan client — cek magic bytes sebelum kirim ke R2.
+      if (!verifySignature(pdfFile.path, FIELD_MIMES.pdf)) {
+        return res.status(400).json({ status: 'error', message: 'File bukan PDF yang valid' });
+      }
+      if (coverFile && !verifySignature(coverFile.path, FIELD_MIMES.cover)) {
+        return res.status(400).json({ status: 'error', message: 'Cover bukan JPG/PNG yang valid' });
+      }
+
       const { title, author, description, sub_field_id, level, language } = req.body;
       if (!title?.trim()) return res.status(400).json({ status: 'error', message: 'Judul diperlukan' });
 
-      // Upload PDF ke folder pdfs/ (stream dari disk, bukan buffer di memori)
-      const fileUrl = await uploadToR2(pdfFile.path, pdfFile.originalname, 'pdfs');
-
-      // Upload cover ke folder covers/ (opsional)
-      let coverUrl = null;
-      if (coverFile) {
-        coverUrl = await uploadToR2(coverFile.path, coverFile.originalname, 'covers');
+      // Metadata divalidasi SEBELUM upload — gagal di sini berarti tidak ada
+      // object yatim di R2 yang perlu dibersihkan.
+      let subFieldId = null;
+      if (sub_field_id !== undefined && String(sub_field_id).trim() !== '') {
+        subFieldId = Number(sub_field_id);
+        if (!Number.isInteger(subFieldId) || subFieldId < 1) {
+          return res.status(400).json({ status: 'error', message: 'sub_field_id tidak valid' });
+        }
+        // FK aktif di DB: insert dengan sub_field_id asing akan gagal setelah
+        // file sudah terkirim ke R2, jadi dicek lebih dulu.
+        const exists = await db('sub_fields').where('id', subFieldId).first('id');
+        if (!exists) {
+          return res.status(400).json({ status: 'error', message: 'sub_field_id tidak ditemukan' });
+        }
       }
 
-      const [id] = await db('contents').insert({
-        title:        title.trim(),
-        author:       author?.trim() || null,
-        description:  description?.trim() || null,
-        sub_field_id: sub_field_id ? Number(sub_field_id) : null,
-        level:        level ? Number(level) : 1,
-        language:     language?.trim() || 'id',
-        content_type: 'pdf',
-        file_url:     fileUrl,
-        cover_url:    coverUrl,
-        created_at:   new Date().toISOString(),
-        updated_at:   new Date().toISOString(),
-      });
+      let levelNum = 1;
+      if (level !== undefined && String(level).trim() !== '') {
+        levelNum = Number(level);
+        if (!Number.isInteger(levelNum) || levelNum < 1 || levelNum > 4) {
+          return res.status(400).json({ status: 'error', message: 'level harus 1-4' });
+        }
+      }
 
-      res.status(201).json({
-        status: 'success',
-        message: 'Upload berhasil',
-        data: { id, file_url: fileUrl, cover_url: coverUrl },
-      });
+      const lang = language?.trim() || 'id';
+      if (!['id', 'en'].includes(lang)) {
+        return res.status(400).json({ status: 'error', message: "language harus 'id' atau 'en'" });
+      }
+
+      // Lacak object yang sudah masuk R2 supaya bisa dibersihkan kalau langkah
+      // berikutnya gagal. Tanpa ini, cover/DB yang gagal meninggalkan file yatim
+      // di bucket yang tidak direferensikan baris mana pun.
+      const uploaded = [];
+      try {
+        const fileUrl = await uploadToR2(pdfFile.path, pdfFile.originalname, 'pdfs');
+        uploaded.push(fileUrl);
+
+        let coverUrl = null;
+        if (coverFile) {
+          coverUrl = await uploadToR2(coverFile.path, coverFile.originalname, 'covers');
+          uploaded.push(coverUrl);
+        }
+
+        const [id] = await db('contents').insert({
+          title:        title.trim().slice(0, 255),
+          author:       author?.trim().slice(0, 255) || null,
+          description:  description?.trim() || null,
+          sub_field_id: subFieldId,
+          level:        levelNum,
+          language:     lang,
+          content_type: 'pdf',
+          file_url:     fileUrl,
+          cover_url:    coverUrl,
+          created_at:   new Date().toISOString(),
+          updated_at:   new Date().toISOString(),
+        });
+
+        res.status(201).json({
+          status: 'success',
+          message: 'Upload berhasil',
+          data: { id, file_url: fileUrl, cover_url: coverUrl },
+        });
+      } catch (err) {
+        // Compensating cleanup: hapus object yang sudah terkirim, lalu lempar
+        // ulang supaya handler luar yang membalas error.
+        for (const url of uploaded) {
+          await deleteFromR2(url).catch((e) =>
+            console.error('[admin/upload] rollback R2 gagal:', url, e.message));
+        }
+        throw err;
+      }
     } catch (err) {
       console.error('[admin/upload]', err);
       res.status(500).json({ status: 'error', message: err.message || 'Upload gagal' });
@@ -185,7 +270,9 @@ router.delete('/contents/:id', isAdmin, async (req, res) => {
 // Error handler khusus router ini — tangkap error dari multer (fileFilter,
 // limit ukuran) dan kembalikan 400 dengan pesan jelas, bukan 500 generik.
 router.use((err, req, res, next) => {
-  if (err instanceof multer.MulterError || err.message?.startsWith('Tipe file') || err.message?.startsWith('Format cover')) {
+  // err.status ditandai oleh badFile(); jangan cocokkan teks pesan — pesan
+  // berubah dan mismatch-nya diam-diam mengubah 400 jadi 500.
+  if (err instanceof multer.MulterError || err.status === 400) {
     return res.status(400).json({ status: 'error', message: err.message });
   }
   next(err);

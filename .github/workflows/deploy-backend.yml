@@ -7,21 +7,73 @@ on:
     paths:
       - 'backend/**'
       - 'database/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'knexfile.js'
       - 'package.json'
       - 'package-lock.json'
+      - '.github/workflows/deploy-backend.yml'
+
+# Deploy ke satu VPS: jangan pernah dua run bersamaan. Tanpa ini, dua run bisa
+# git pull + npm ci + pm2 restart berbarengan dan saling merusak.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Gate: kalau test gagal, deploy tidak pernah jalan.
+  test:
     runs-on: ubuntu-latest
     steps:
+      # Action di-pin ke commit SHA, bukan tag atau @master — tag bisa dipindah
+      # ke commit lain dan diam-diam mengeksekusi kode baru di runner kita.
+      - name: Checkout kode
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies (dari lockfile)
+        run: npm ci
+
+      - name: Cek syntax backend
+        run: |
+          for f in backend/server.js backend/middleware/*.js backend/models/*.js \
+                   backend/routes/*.js backend/utils/*.js backend/helpers/*.js \
+                   knexfile.js database/migrations/*.js; do
+            node --check "$f"
+          done
+
+      - name: Jalankan test
+        run: npm test
+        env:
+          JWT_SECRET: ci-test-secret-not-used-in-production
+
+      - name: Audit dependency production
+        run: npm audit --omit=dev --audit-level=high
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      # scripts/deploy.sh yang mengurus urutannya: backup -> pull -> npm ci ->
+      # migrate -> pm2 restart -> health check, dan rollback kode kalau gagal.
+      #
+      # CATATAN: ini memakai password SSH (secrets.VPS_PASSWORD), mengikuti
+      # konfigurasi yang sudah ada. Key-based auth lebih aman — kalau nanti
+      # diganti, tambahkan secret VPS_SSH_KEY lalu tukar `password:` jadi `key:`.
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
+          command_timeout: 15m
           script: |
+            set -e
             cd /home/Perpustakaan/Perpustakaan
-            git pull origin main
-            npm install --production
-            pm2 restart perpustakaan-api
+            chmod +x scripts/deploy.sh
+            ./scripts/deploy.sh

@@ -11,6 +11,16 @@ const db = require('../models/db');
 
 const r2Base = () => process.env.R2_PUBLIC_URL || '';
 
+// Math.min(100, parseInt('-1')) = -1, dan SQLite menganggap `LIMIT -1` = tanpa
+// batas — caller bisa menarik seluruh tabel. Validasi harus menolak eksplisit,
+// bukan clamp satu sisi. Mengembalikan null = input invalid.
+const parseIntInRange = (raw, { min, max, fallback }) => {
+  if (raw === undefined || raw === '') return fallback;
+  if (!/^\d+$/.test(String(raw).trim())) return null; // tolak '-1', '1.5', 'abc'
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= min && n <= max ? n : null;
+};
+
 const formatContent = (c) => ({
   ...c,
   file_url: c.file_url ? (/^https?:\/\//.test(c.file_url) ? c.file_url : `${r2Base()}${c.file_url}`) : null,
@@ -20,12 +30,22 @@ const formatContent = (c) => ({
 // GET /api/contents?page=1&limit=20&field_id=2
 router.get('/', async (req, res) => {
   try {
-    const page  = Math.max(1, parseInt(req.query.page)  || 1);
-    const limit = Math.min(100, parseInt(req.query.limit) || 20);
-    const offset = (page - 1) * limit;
-    const fieldId = req.query.field_id ? Number(req.query.field_id) : null;
+    const page = parseIntInRange(req.query.page, { min: 1, max: 100000, fallback: 1 });
+    if (page === null) {
+      return res.status(400).json({ status: 'error', message: 'page harus bilangan bulat ≥ 1' });
+    }
 
-    if (fieldId !== null && (!Number.isInteger(fieldId) || fieldId < 1)) {
+    const limit = parseIntInRange(req.query.limit, { min: 1, max: 100, fallback: 20 });
+    if (limit === null) {
+      return res.status(400).json({ status: 'error', message: 'limit harus bilangan bulat 1-100' });
+    }
+
+    const offset = (page - 1) * limit;
+
+    const fieldId = req.query.field_id === undefined || req.query.field_id === ''
+      ? null
+      : parseIntInRange(req.query.field_id, { min: 1, max: 1000000, fallback: null });
+    if (req.query.field_id !== undefined && req.query.field_id !== '' && fieldId === null) {
       return res.status(400).json({ status: 'error', message: 'field_id tidak valid' });
     }
 
@@ -60,18 +80,28 @@ router.get('/search', async (req, res) => {
     const { q, level } = req.query;
     if (!q) return res.status(400).json({ status: 'error', message: 'Parameter q diperlukan' });
 
+    // Query sangat panjang hanya membebani LIKE scan tanpa menambah relevansi.
+    const term = String(q).trim().slice(0, 100);
+    if (!term) return res.status(400).json({ status: 'error', message: 'Parameter q diperlukan' });
+
+    const limit = parseIntInRange(req.query.limit, { min: 1, max: 100, fallback: 50 });
+    if (limit === null) {
+      return res.status(400).json({ status: 'error', message: 'limit harus bilangan bulat 1-100' });
+    }
+
     let query = db('contents').where(function () {
-      this.where('title', 'like', `%${q}%`)
-        .orWhere('author', 'like', `%${q}%`)
-        .orWhere('tags', 'like', `%${q}%`);
+      this.where('title', 'like', `%${term}%`)
+        .orWhere('author', 'like', `%${term}%`)
+        .orWhere('tags', 'like', `%${term}%`);
     });
 
     if (level) {
-      const levels = level.split(',').map(Number).filter(n => n >= 1 && n <= 4);
+      const levels = String(level).split(',').map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 4);
       if (levels.length) query = query.whereIn('level', levels);
     }
 
-    const results = await query.orderBy(['level', 'id']);
+    // Tanpa limit, route ini mengembalikan seluruh baris yang cocok.
+    const results = await query.orderBy(['level', 'id']).limit(limit);
     res.json({ status: 'success', data: results.map(formatContent), meta: { total: results.length } });
   } catch (err) {
     console.error(err);
