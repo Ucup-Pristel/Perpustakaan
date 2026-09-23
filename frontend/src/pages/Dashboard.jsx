@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { BookOpen, ChevronRight, FileText, Loader2, StickyNote } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { API_URL } from '../lib/api'
+import { apiFetch } from '../lib/api'
 
 function formatDate(value) {
   return value ? new Intl.DateTimeFormat('id-ID', { dateStyle: 'medium' }).format(new Date(value)) : ''
@@ -22,25 +22,26 @@ export default function Dashboard() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     async function load() {
       setLoading(true)
       setError('')
       try {
-        const res = await fetch(`${API_URL}/api/activity/summary`, {
-          headers: { Authorization: `Bearer ${token}` },
+        // apiFetch: 401 (token kadaluarsa / sesi dicabut) memicu logout global,
+        // bukan cuma pesan error yang membingungkan.
+        const json = await apiFetch('/api/activity/summary', {
+          token, signal: controller.signal,
         })
-        const json = await res.json()
-        if (!res.ok) throw new Error(json.message || 'Gagal memuat dashboard')
         if (!cancelled) setSummary(json.data || { recent_reads: [], my_notes: [] })
       } catch (err) {
-        if (!cancelled) setError(err.message || 'Gagal memuat dashboard')
+        if (!cancelled && err.name !== 'AbortError') setError(err.message || 'Gagal memuat dashboard')
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
 
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [navigate, token])
 
   if (loading) {

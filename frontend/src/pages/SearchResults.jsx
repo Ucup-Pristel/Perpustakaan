@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { BookOpen, Loader2, SearchX } from 'lucide-react'
-import { API_URL } from '../lib/api'
+import { apiFetch } from '../lib/api'
 
 function BookCard({ item }) {
   return (
@@ -42,17 +42,14 @@ export default function SearchResults() {
   useEffect(() => {
     if (!q.trim()) { setResults([]); return }
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
-    fetch(`${API_URL}/api/search?q=${encodeURIComponent(q)}`)
-      .then(res => res.json().then(json => ({ ok: res.ok, json })))
-      .then(({ ok, json }) => {
-        if (!ok) throw new Error(json.message)
-        if (!cancelled) setResults(json.data || [])
-      })
-      .catch(err => { if (!cancelled) setError(err.message) })
+    apiFetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: controller.signal })
+      .then(json => { if (!cancelled) setResults(json.data || []) })
+      .catch(err => { if (!cancelled && err.name !== 'AbortError') setError(err.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [q])
 
   return (

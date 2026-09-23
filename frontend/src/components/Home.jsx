@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronRight, Layers, BookMarked, AlertTriangle } from 'lucide-react'
-import { API_URL } from '../lib/api'
+import { apiFetch } from '../lib/api'
 
 // --- Skeleton ---
 function SkeletonCard() {
@@ -91,14 +91,15 @@ export default function Home() {
   const [error, setError]     = useState(null)
 
   useEffect(() => {
-    fetch(`${API_URL}/api/fields`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`)
-        return r.json()
-      })
-      .then(json => setFields(json.data ?? []))
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+    // AbortController: request dibatalkan saat unmount, jadi tidak ada
+    // setState setelah komponen hilang (StrictMode mount dua kali).
+    const controller = new AbortController()
+    let cancelled = false
+    apiFetch('/api/fields', { signal: controller.signal })
+      .then(json => { if (!cancelled) setFields(json.data ?? []) })
+      .catch(err => { if (!cancelled && err.name !== 'AbortError') setError(err.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true; controller.abort() }
   }, [])
 
   return (

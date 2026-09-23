@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, BookOpen, ChevronRight, Loader2, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { API_URL } from '../lib/api'
+import { apiFetch } from '../lib/api'
 
 function Progress({ value = 0 }) {
   const pct = Math.max(0, Math.min(100, Number(value) || 0))
@@ -29,39 +29,42 @@ export default function ContentList() {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     async function load() {
       setLoading(true)
       setError('')
       try {
-        const [contentRes, fieldsRes] = await Promise.all([
-          fetch(`${API_URL}/api/contents?field_id=${encodeURIComponent(fieldId)}`),
-          fetch(`${API_URL}/api/fields`),
+        const [contentJson, fieldsJson] = await Promise.all([
+          apiFetch(`/api/contents?field_id=${encodeURIComponent(fieldId)}`, { signal: controller.signal }),
+          // Daftar bidang hanya untuk judul halaman — gagal di sini tidak
+          // boleh menggagalkan daftar konten.
+          apiFetch('/api/fields', { signal: controller.signal }).catch(() => null),
         ])
-        const contentJson = await contentRes.json()
-        if (!contentRes.ok) throw new Error(contentJson.message || 'Gagal memuat konten')
-        const fieldsJson = fieldsRes.ok ? await fieldsRes.json() : null
         if (cancelled) return
         setContents(contentJson.data || [])
         setField((fieldsJson?.data || []).find(item => String(item.id) === String(fieldId)) || null)
 
         if (token && contentJson.data?.length) {
+          // ponytail: masih satu request per konten (N+1). Batasi ke endpoint
+          // batch kalau daftar per bidang tumbuh besar.
+          // .catch per item: satu progress gagal tidak boleh menggagalkan
+          // seluruh halaman (dulu Promise.all ikut reject).
           const entries = await Promise.all(contentJson.data.map(async content => {
-            const res = await fetch(`${API_URL}/api/activity/progress/${content.id}`, {
-              headers: { Authorization: `Bearer ${token}` },
-            })
-            const json = await res.json()
-            return [content.id, json.data?.last_page_read || 0]
+            const json = await apiFetch(`/api/activity/progress/${content.id}`, {
+              token, signal: controller.signal,
+            }).catch(() => null)
+            return [content.id, json?.data?.last_page_read || 0]
           }))
           if (!cancelled) setProgress(Object.fromEntries(entries))
         }
       } catch (err) {
-        if (!cancelled) setError(err.message || 'Gagal memuat data')
+        if (!cancelled && err.name !== 'AbortError') setError(err.message || 'Gagal memuat data')
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [fieldId, token])
 
   return (

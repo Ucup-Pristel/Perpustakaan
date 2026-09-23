@@ -8,7 +8,7 @@ import {
   Loader2, PanelRightClose, PanelRightOpen, Send, StickyNote, X,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { API_URL } from '../lib/api'
+import { apiFetch } from '../lib/api'
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -62,17 +62,20 @@ export default function Reader() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     async function load() {
       setLoading(true)
       setError('')
       try {
-        const requests = [fetch(`${API_URL}/api/contents/${cid}`)]
-           if (token) requests.push(fetch(`${API_URL}/api/activity/reading-progress/${cid}`, { headers: { Authorization: `Bearer ${token}` } }))
-        const [contentRes, progressRes] = await Promise.all(requests)
-        const contentJson = await contentRes.json()
-        if (!contentRes.ok) throw new Error(contentJson.message || 'Gagal memuat konten')
+        const [contentJson, progressJson] = await Promise.all([
+          apiFetch(`/api/contents/${cid}`, { signal: controller.signal }),
+          // Progress gagal (mis. sesi berakhir) tidak boleh menghalangi PDF
+          // terbuka. apiFetch tetap memicu logout global saat 401.
+          token
+            ? apiFetch(`/api/activity/reading-progress/${cid}`, { token, signal: controller.signal }).catch(() => null)
+            : Promise.resolve(null),
+        ])
         if (!contentJson.data.file_url || contentJson.data.content_type !== 'pdf') throw new Error('Konten ini belum memiliki file PDF')
-        const progressJson = progressRes ? await progressRes.json() : null
         if (cancelled) return
         const saved = Math.max(1, Number(progressJson?.data?.last_page_read) || 1)
         restoredPage.current = saved
@@ -80,14 +83,14 @@ export default function Reader() {
         setSavedPage(saved)
         setPageNumber(saved)
       } catch (err) {
-        if (!cancelled) setError(err.message || 'Gagal memuat konten')
+        if (!cancelled && err.name !== 'AbortError') setError(err.message || 'Gagal memuat konten')
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
 
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [cid, token])
 
   useEffect(() => {
@@ -98,9 +101,9 @@ export default function Reader() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setNotesLoading(true)
-    fetch(`${API_URL}/api/activity/notes/${cid}?page_number=${pageNumber}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(res => res.json())
+    apiFetch(`/api/activity/notes/${cid}?page_number=${pageNumber}`, { token, signal: controller.signal })
       .then(json => {
         if (cancelled) return
         const note = json.data?.[0]
@@ -109,7 +112,7 @@ export default function Reader() {
       })
       .catch(() => { if (!cancelled) setNotes([]) })
       .finally(() => { if (!cancelled) setNotesLoading(false) })
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [cid, pageNumber, token])
 
   const saveProgress = useCallback(async page => {
@@ -117,12 +120,11 @@ export default function Reader() {
     setSaving(true)
     setSaveMsg('')
     try {
-      const res = await fetch(`${API_URL}/api/activity/reading-progress`, {
+      await apiFetch('/api/activity/reading-progress', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        token,
         body: JSON.stringify({ content_id: cid, last_page: page }),
       })
-      if (!res.ok) throw new Error()
       setSavedPage(page)
       setSaveMsg('ok')
       window.setTimeout(() => setSaveMsg(''), 2000)
@@ -180,13 +182,11 @@ export default function Reader() {
     setNotesSaving(true)
     setNotesError('')
     try {
-      const res = await fetch(`${API_URL}/api/activity/notes`, {
+      const json = await apiFetch('/api/activity/notes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        token,
         body: JSON.stringify({ content_id: cid, page_number: pageNumber, note_text: text }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.message)
       setNotes([json.data])
       setNoteText(json.data.note_text)
     } catch (err) {

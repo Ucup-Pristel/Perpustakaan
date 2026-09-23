@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BookOpen, ImagePlus, Loader2, Trash2, UploadCloud } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { API_URL } from '../lib/api'
+import { apiFetch } from '../lib/api'
 
 const SUB_FIELDS = [
   { id: 1,  name: 'Pemasaran',                field: 'Manajemen' },
@@ -38,14 +38,23 @@ export default function AdminUpload() {
   const [contents,    setContents]    = useState([])
   const [listLoading, setListLoading] = useState(true)
 
-  const authHeaders = { Authorization: `Bearer ${token}` }
+  // Dideklarasikan SEBELUM pemakaian pertama (loadContents di bawah).
+  // Function declaration memang di-hoist, tapi urutan terbalik memicu warning
+  // react(immutability) di oxlint.
+  function showToast(type, msg) {
+    setToast({ type, msg })
+    window.setTimeout(() => setToast(null), 4000)
+  }
 
   async function loadContents() {
     setListLoading(true)
     try {
-      const res = await fetch(`${API_URL}/api/admin/contents`, { headers: authHeaders })
-      const json = await res.json()
-      if (res.ok) setContents(json.data || [])
+      const json = await apiFetch('/api/admin/contents', { token })
+      setContents(json.data || [])
+    } catch (err) {
+      // Dulu error ditelan diam-diam (`if (res.ok)`), jadi tabel kosong
+      // tanpa penjelasan. Sekarang penyebabnya ditampilkan.
+      showToast('err', err.message || 'Gagal memuat daftar konten')
     } finally {
       setListLoading(false)
     }
@@ -74,9 +83,9 @@ export default function AdminUpload() {
 
     setLoading(true)
     try {
-      const res = await fetch(`${API_URL}/api/admin/upload`, { method: 'POST', headers: authHeaders, body: fd })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.message)
+      // body FormData: apiFetch sengaja tidak menyetel Content-Type supaya
+      // browser yang menentukan boundary multipart.
+      const json = await apiFetch('/api/admin/upload', { method: 'POST', token, body: fd })
       showToast('ok', `Upload berhasil! ID: ${json.data.id}`)
       setForm(INIT)
       setPdfFile(null);  if (pdfRef.current)   pdfRef.current.value   = ''
@@ -92,15 +101,13 @@ export default function AdminUpload() {
 
   async function handleDelete(id, title) {
     if (!window.confirm(`Hapus "${title}"?`)) return
-    const res = await fetch(`${API_URL}/api/admin/contents/${id}`, { method: 'DELETE', headers: authHeaders })
-    const json = await res.json()
-    if (res.ok) { showToast('ok', 'Konten dihapus.'); loadContents() }
-    else showToast('err', json.message)
-  }
-
-  function showToast(type, msg) {
-    setToast({ type, msg })
-    window.setTimeout(() => setToast(null), 4000)
+    try {
+      await apiFetch(`/api/admin/contents/${id}`, { method: 'DELETE', token })
+      showToast('ok', 'Konten dihapus.')
+      loadContents()
+    } catch (err) {
+      showToast('err', err.message || 'Gagal menghapus konten')
+    }
   }
 
   const fileInputClass = 'block w-full text-sm text-amber-900 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-800 hover:file:bg-amber-200 cursor-pointer'

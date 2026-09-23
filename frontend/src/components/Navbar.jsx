@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { BookOpen, Compass, Loader2, LogIn, LogOut, Search, UserCircle2 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { API_URL } from '../lib/api'
+import { apiFetch } from '../lib/api'
 
 export default function Navbar() {
   const { user, logout } = useAuth()
@@ -20,12 +20,13 @@ export default function Navbar() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     const timer = window.setTimeout(async () => {
       setSearching(true)
       try {
-        const res = await fetch(`${API_URL}/api/search?q=${encodeURIComponent(value)}`)
-        const json = await res.json()
-        if (!res.ok) throw new Error(json.message)
+        const json = await apiFetch(`/api/search?q=${encodeURIComponent(value)}`, {
+          signal: controller.signal,
+        })
         if (!cancelled) setResults(json.data || [])
       } catch {
         if (!cancelled) setResults([])
@@ -36,6 +37,7 @@ export default function Navbar() {
 
     return () => {
       cancelled = true
+      controller.abort()
       window.clearTimeout(timer)
     }
   }, [query])
