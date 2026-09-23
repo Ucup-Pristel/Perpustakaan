@@ -22,7 +22,7 @@ const PORT = process.env.PORT || 3000;
 
 // Di belakang Nginx: pakai X-Forwarded-For hop pertama supaya req.ip = IP klien asli
 // (tanpa ini semua klien terlihat sebagai 127.0.0.1 dan rate limiter jadi global)
-app.set('trust proxy', 1);
+app.set('trust proxy', true);
 
 // Middleware dasar
 app.use(helmet());

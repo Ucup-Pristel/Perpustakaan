@@ -15,7 +15,7 @@ const makeLimiter = (windowMs, max, message) =>
     message: { status: 'error', message },
   });
 
-const globalLimiter = makeLimiter(15 * 60 * 1000, 100, 'Terlalu banyak request, coba lagi nanti.');
+const globalLimiter = makeLimiter(15 * 60 * 1000, 500, 'Terlalu banyak request, coba lagi nanti.');
 const authLimiter = makeLimiter(15 * 60 * 1000, 5, 'Terlalu banyak percobaan login, coba lagi nanti.');
 const uploadLimiter = makeLimiter(60 * 60 * 1000, 10, 'Batas upload tercapai, coba lagi nanti.');
 
