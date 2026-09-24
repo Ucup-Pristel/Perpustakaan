@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BookOpen, ImagePlus, Loader2, Trash2, UploadCloud } from 'lucide-react'
+import { BookOpen, ImagePlus, LayoutDashboard, Loader2, Trash2, UploadCloud, Users } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { apiFetch } from '../lib/api'
 
@@ -19,7 +19,7 @@ const LEVELS = [
 const INIT = { title: '', author: '', description: '', sub_field_id: '', level: '1', language: 'id' }
 
 export default function AdminUpload() {
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const pdfRef    = useRef(null)
   const coverRef  = useRef(null)
 
@@ -35,6 +35,9 @@ export default function AdminUpload() {
   // id konten yang sedang menunggu upload cover — dipakai untuk menonaktifkan
   // tombol baris itu saja, bukan seluruh tabel.
   const [coverBusyId, setCoverBusyId] = useState(null)
+  const [users,       setUsers]       = useState([])
+  const [usersLoading, setUsersLoading] = useState(true)
+  const [roleBusyId,  setRoleBusyId]  = useState(null)
 
   // Dideklarasikan SEBELUM pemakaian pertama (loadContents di bawah).
   // Function declaration memang di-hoist, tapi urutan terbalik memicu warning
@@ -59,6 +62,8 @@ export default function AdminUpload() {
   }
 
   useEffect(() => { loadContents() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { loadUsers() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sub-bidang diambil dari server, bukan daftar hardcoded. Publik, jadi tanpa token.
   useEffect(() => {
@@ -140,6 +145,35 @@ export default function AdminUpload() {
     }
   }
 
+  async function loadUsers() {
+    setUsersLoading(true)
+    try {
+      const json = await apiFetch('/api/admin/users', { token })
+      setUsers(json.data || [])
+    } catch (err) {
+      showToast('err', `Gagal memuat daftar user: ${err.message}`)
+    } finally {
+      setUsersLoading(false)
+    }
+  }
+
+  async function handleRoleChange(target, role) {
+    if (role === target.role) return
+    if (!window.confirm(`Ubah role ${target.email} menjadi ${role}?`)) return
+    setRoleBusyId(target.id)
+    try {
+      await apiFetch(`/api/admin/users/${target.id}/role`, {
+        method: 'PATCH', token, body: JSON.stringify({ role }),
+      })
+      showToast('ok', `Role ${target.email} sekarang ${role}.`)
+      loadUsers()
+    } catch (err) {
+      showToast('err', err.message || 'Gagal mengubah role')
+    } finally {
+      setRoleBusyId(null)
+    }
+  }
+
   const fileInputClass = 'block w-full text-sm text-amber-900 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-800 hover:file:bg-amber-200 cursor-pointer'
 
   return (
@@ -156,7 +190,14 @@ export default function AdminUpload() {
           <h1 className="text-2xl font-bold text-amber-900">Admin Backoffice</h1>
           <p className="text-sm text-amber-700 mt-0.5">Upload PDF dan kelola konten perpustakaan</p>
         </div>
-        <Link to="/" className="text-xs text-amber-700 hover:underline">← Kembali ke Beranda</Link>
+        <div className="flex items-center gap-3">
+          {/* Admin juga member: bacaan + catatan pribadi tetap di /dashboard,
+              tidak diduplikasi di sini. */}
+          <Link to="/dashboard" className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 hover:underline">
+            <LayoutDashboard className="w-3.5 h-3.5" /> Dashboard Saya
+          </Link>
+          <Link to="/" className="text-xs text-amber-700 hover:underline">← Kembali ke Beranda</Link>
+        </div>
       </div>
 
       {/* Upload Form */}
@@ -325,6 +366,68 @@ export default function AdminUpload() {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* Kelola Role */}
+      <section className="bg-white rounded-2xl border border-amber-100 shadow-sm p-6">
+        <h2 className="text-lg font-bold text-amber-900 mb-1 flex items-center gap-2">
+          <Users className="w-5 h-5" /> Kelola Role ({users.length})
+        </h2>
+        <p className="text-xs text-amber-700 mb-5">
+          Hanya member dan admin. Perubahan role baru berlaku setelah user login ulang —
+          role ikut tersimpan di dalam token.
+        </p>
+        {usersLoading ? (
+          <div className="flex justify-center py-10"><Loader2 className="w-6 h-6 animate-spin text-amber-600" /></div>
+        ) : users.length === 0 ? (
+          <p className="text-sm text-gray-500 py-6 text-center">Belum ada user.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-amber-100 text-left text-xs text-amber-700 uppercase tracking-wide">
+                  <th className="pb-2 pr-4">ID</th>
+                  <th className="pb-2 pr-4">Nama</th>
+                  <th className="pb-2 pr-4">Email</th>
+                  <th className="pb-2">Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(u => {
+                  // Menurunkan role diri sendiri ditolak backend (bisa mengunci
+                  // backoffice permanen). Select-nya dimatikan supaya tidak
+                  // menawarkan aksi yang pasti gagal.
+                  const isSelf = u.id === user?.id
+                  return (
+                    <tr key={u.id} className="border-b border-amber-50 hover:bg-amber-50/50">
+                      <td className="py-2 pr-4 text-gray-400 tabular-nums">{u.id}</td>
+                      <td className="py-2 pr-4 font-medium text-amber-900 max-w-[160px] truncate">
+                        {u.full_name || '—'}
+                        {isSelf && <span className="ml-2 text-xs font-normal text-amber-600">(Anda)</span>}
+                      </td>
+                      <td className="py-2 pr-4 text-gray-600 max-w-[200px] truncate">{u.email}</td>
+                      <td className="py-2">
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={u.role}
+                            disabled={isSelf || roleBusyId === u.id}
+                            onChange={e => handleRoleChange(u, e.target.value)}
+                            className="field py-1 text-xs disabled:bg-gray-50 disabled:text-gray-400"
+                            aria-label={`Role ${u.email}`}
+                          >
+                            <option value="member">member</option>
+                            <option value="admin">admin</option>
+                          </select>
+                          {roleBusyId === u.id && <Loader2 className="w-4 h-4 animate-spin text-amber-600" />}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

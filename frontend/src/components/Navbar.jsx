@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { BookOpen, Compass, Loader2, LogIn, LogOut, Search, UserCircle2 } from 'lucide-react'
+import { BookOpen, Compass, LayoutDashboard, Loader2, LogIn, LogOut, Search, ShieldCheck, UserCircle2 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { apiFetch } from '../lib/api'
 
 export default function Navbar() {
-  const { user, logout } = useAuth()
+  const { user, isAdmin, logout } = useAuth()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -82,7 +82,7 @@ export default function Navbar() {
         </div>
 
         {user ? (
-          <div className="flex items-center gap-2 shrink-0"><div className="hidden lg:flex items-center gap-1.5 text-amber-100 text-sm"><UserCircle2 className="w-4 h-4" /><span className="truncate max-w-[120px]">{user.full_name ?? user.email ?? 'Pengguna'}</span></div><button onClick={handleLogout} className="flex items-center gap-1.5 bg-amber-700 hover:bg-amber-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"><LogOut className="w-3.5 h-3.5" /> Keluar</button></div>
+          <div className="flex items-center gap-2 shrink-0"><Link to="/dashboard" className="flex items-center gap-1.5 text-amber-100 hover:text-white text-xs font-semibold px-2 py-1.5 rounded-lg hover:bg-amber-700 transition"><LayoutDashboard className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Dashboard</span></Link>{isAdmin && <Link to="/admin" className="flex items-center gap-1.5 text-amber-100 hover:text-white text-xs font-semibold px-2 py-1.5 rounded-lg hover:bg-amber-700 transition"><ShieldCheck className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Admin</span></Link>}<div className="hidden lg:flex items-center gap-1.5 text-amber-100 text-sm"><UserCircle2 className="w-4 h-4" /><span className="truncate max-w-[120px]">{user.full_name ?? user.email ?? 'Pengguna'}</span></div><button onClick={handleLogout} className="flex items-center gap-1.5 bg-amber-700 hover:bg-amber-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"><LogOut className="w-3.5 h-3.5" /> Keluar</button></div>
         ) : (
           <Link to="/login" className="shrink-0 flex items-center gap-1.5 bg-amber-100 hover:bg-white text-amber-800 text-xs font-semibold px-3 py-1.5 rounded-lg transition"><LogIn className="w-3.5 h-3.5" /> Masuk</Link>
         )}

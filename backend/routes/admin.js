@@ -282,6 +282,45 @@ router.delete('/contents/:id', isAdmin, async (req, res) => {
   }
 });
 
+const ROLES = ['member', 'admin'];
+
+// GET /api/admin/users — daftar user + role
+router.get('/users', isAdmin, async (req, res) => {
+  try {
+    const rows = await db('users').orderBy('id').select('id', 'email', 'full_name', 'role', 'created_at');
+    res.json({ status: 'success', data: rows });
+  } catch (err) {
+    console.error('[admin/users]', err);
+    res.status(500).json({ status: 'error', message: 'Gagal mengambil data user' });
+  }
+});
+
+// PATCH /api/admin/users/:id/role — ubah role antara member/admin
+router.patch('/users/:id/role', isAdmin, async (req, res) => {
+  try {
+    const { role } = req.body;
+    if (!ROLES.includes(role)) {
+      return res.status(400).json({ status: 'error', message: `Role harus salah satu dari: ${ROLES.join(', ')}` });
+    }
+
+    const target = await db('users').where('id', req.params.id).first('id', 'email', 'role');
+    if (!target) return res.status(404).json({ status: 'error', message: 'User tidak ditemukan' });
+
+    // Tanpa guard ini admin bisa menurunkan dirinya sendiri dan — kalau dia satu-satunya
+    // admin — backoffice terkunci permanen, karena tidak ada endpoint lain yang bisa
+    // menaikkan role kembali.
+    if (target.id === req.user.id && role !== 'admin') {
+      return res.status(400).json({ status: 'error', message: 'Tidak bisa menurunkan role diri sendiri' });
+    }
+
+    await db('users').where('id', target.id).update({ role });
+    res.json({ status: 'success', message: `Role ${target.email} diubah ke ${role}`, data: { id: target.id, role } });
+  } catch (err) {
+    console.error('[admin/users/role]', err);
+    res.status(500).json({ status: 'error', message: 'Gagal mengubah role' });
+  }
+});
+
 // Error handler khusus router ini — tangkap error dari multer (fileFilter,
 // limit ukuran) dan kembalikan 400 dengan pesan jelas, bukan 500 generik.
 router.use((err, req, res, next) => {
