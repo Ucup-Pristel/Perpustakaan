@@ -48,6 +48,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     // Batas sama dengan endpoint register supaya akun buatan script ini tidak
     // lebih lemah dari yang lewat form.
     if (password.length < 6) throw new Error('Password minimal 6 karakter');
+    if (Buffer.byteLength(password, 'utf8') > 72) throw new Error('Password maksimal 72 byte');
 
     const existing = await db('users').whereRaw('lower(email) = ?', [email]).first();
 

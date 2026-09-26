@@ -6,16 +6,20 @@ const auth = require('../middleware/authMiddleware');
 const db = require('../models/db');
 
 function validContentId(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
   const id = Number(value);
-  return Number.isInteger(id) && id > 0 ? id : null;
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 async function saveProgress(req, res) {
   try {
     const content_id = validContentId(req.body.content_id);
-    const last_page = Number(req.body.last_page ?? req.body.last_page_read);
-    if (!content_id || !Number.isInteger(last_page) || last_page < 1) {
+    const last_page = validContentId(req.body.last_page ?? req.body.last_page_read);
+    if (!content_id || !last_page) {
       return res.status(400).json({ status: 'error', message: 'content_id dan last_page harus bilangan bulat ≥ 1' });
+    }
+    if (!await db('contents').where('id', content_id).first('id')) {
+      return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
     }
 
     const updated_at = new Date().toISOString();
@@ -54,8 +58,8 @@ router.get('/progress/:content_id', auth, getProgress);
 router.get('/notes/:content_id', auth, async (req, res) => {
   try {
     const content_id = validContentId(req.params.content_id);
-    const page_number = req.query.page_number === undefined ? null : Number(req.query.page_number);
-    if (!content_id || (page_number !== null && (!Number.isInteger(page_number) || page_number < 1))) {
+    const page_number = req.query.page_number === undefined ? null : validContentId(req.query.page_number);
+    if (!content_id || (req.query.page_number !== undefined && !page_number)) {
       return res.status(400).json({ status: 'error', message: 'content_id atau page_number tidak valid' });
     }
 
@@ -72,10 +76,13 @@ router.get('/notes/:content_id', auth, async (req, res) => {
 router.post('/notes', auth, async (req, res) => {
   try {
     const content_id = validContentId(req.body.content_id);
-    const page_number = Number(req.body.page_number);
+    const page_number = validContentId(req.body.page_number);
     const note_text = typeof req.body.note_text === 'string' ? req.body.note_text.trim() : '';
-    if (!content_id || !Number.isInteger(page_number) || page_number < 1 || !note_text) {
+    if (!content_id || !page_number || !note_text) {
       return res.status(400).json({ status: 'error', message: 'content_id, page_number, dan note_text wajib valid' });
+    }
+    if (!await db('contents').where('id', content_id).first('id')) {
+      return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
     }
 
     const updated_at = new Date().toISOString();

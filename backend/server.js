@@ -90,6 +90,7 @@ app.get('/api/health', (req, res) => {
 // GET /api/search?q=...
 app.get('/api/search', async (req, res) => {
   try {
+    if (typeof req.query.q !== 'string') return res.status(400).json({ status: 'error', message: 'Parameter q diperlukan' });
     // queryParser mengembalikan varian query (asli + hasil substitusi sinonim
     // dua arah, mis. "computer" -> juga coba "komputer"). Ini menutup gap
     // typo-tolerance Fuse.js yang cuma efektif untuk salah ketik, bukan kata
@@ -237,7 +238,7 @@ app.use('/api/contents', contentsRouter);
 app.post('/api/contents', auth, isAdmin, async (req, res) => {
   try {
     const { sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at } = req.body;
-    const [id] = await db('contents').insert({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at });
+    const [id] = await db('contents').insert({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags: Array.isArray(tags) ? JSON.stringify(tags) : tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at });
     res.status(201).json({ status: 'success', message: 'Konten berhasil ditambahkan', data: { id } });
   } catch (err) {
     console.error(err);
@@ -249,7 +250,7 @@ app.post('/api/contents', auth, isAdmin, async (req, res) => {
 app.put('/api/contents/:id', auth, isAdmin, async (req, res) => {
   try {
     const { sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, updated_at } = req.body;
-    const count = await db('contents').where('id', req.params.id).update({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, updated_at });
+    const count = await db('contents').where('id', req.params.id).update({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags: Array.isArray(tags) ? JSON.stringify(tags) : tags, language, page_count, duration, difficulty_score, is_featured, updated_at });
     if (!count) return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
     res.json({ status: 'success', message: 'Konten berhasil diperbarui' });
   } catch (err) {
@@ -261,14 +262,18 @@ app.put('/api/contents/:id', auth, isAdmin, async (req, res) => {
 // DELETE /api/contents/:id — protected
 app.delete('/api/contents/:id', auth, isAdmin, async (req, res) => {
   try {
-    const row = await db('contents').where('id', req.params.id).first('file_url', 'cover_url');
+    const row = await db.transaction(async trx => {
+      const content = await trx('contents').where('id', req.params.id).first('file_url', 'cover_url');
+      if (content) await trx('contents').where('id', req.params.id).del();
+      return content;
+    });
     if (!row) return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
 
-    // Hapus file fisik di R2 dulu — kalau gagal (bukan 404), jangan lanjut hapus baris DB
-    await deleteFromR2(row.file_url);
-    await deleteFromR2(row.cover_url);
-
-    await db('contents').where('id', req.params.id).del();
+    // ponytail: cleanup best-effort; tambahkan durable retry jika orphan harus nol.
+    // DB lebih dulu: kegagalan cover tidak boleh meninggalkan PDF hilang di katalog.
+    for (const url of [row.file_url, row.cover_url]) {
+      await deleteFromR2(url).catch(err => console.error('[contents/delete] cleanup R2 gagal:', url, err.message));
+    }
     res.json({ status: 'success', message: 'Konten berhasil dihapus' });
   } catch (err) {
     console.error(err);
@@ -285,6 +290,12 @@ app.use((req, res) => {
 
 // Error handler
 app.use((err, req, res, next) => {
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ status: 'error', message: 'JSON tidak valid' });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ status: 'error', message: 'Request terlalu besar' });
+  }
   console.error(err.stack);
   res.status(500).json({ status: 'error', message: 'Internal server error' });
 });

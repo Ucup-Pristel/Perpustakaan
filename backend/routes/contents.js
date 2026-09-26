@@ -19,6 +19,7 @@ const { formatContent } = require('../helpers/contentUrls');
 // bukan clamp satu sisi. Mengembalikan null = input invalid.
 const parseIntInRange = (raw, { min, max, fallback }) => {
   if (raw === undefined || raw === '') return fallback;
+  if (typeof raw !== 'string') return null;
   if (!/^\d+$/.test(String(raw).trim())) return null; // tolak '-1', '1.5', 'abc'
   const n = Number(raw);
   return Number.isInteger(n) && n >= min && n <= max ? n : null;
@@ -75,7 +76,10 @@ router.get('/', async (req, res) => {
 router.get('/search', async (req, res) => {
   try {
     const { q, level } = req.query;
-    if (!q) return res.status(400).json({ status: 'error', message: 'Parameter q diperlukan' });
+    if (typeof q !== 'string' || !q) return res.status(400).json({ status: 'error', message: 'Parameter q diperlukan' });
+    if (level !== undefined && typeof level !== 'string') {
+      return res.status(400).json({ status: 'error', message: 'level tidak valid' });
+    }
 
     // Query sangat panjang hanya membebani LIKE scan tanpa menambah relevansi.
     const term = String(q).trim().slice(0, 100);
@@ -110,8 +114,8 @@ router.get('/search', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const content = await db('contents')
-      .join('sub_fields', 'contents.sub_field_id', 'sub_fields.id')
-      .join('fields', 'sub_fields.field_id', 'fields.id')
+      .leftJoin('sub_fields', 'contents.sub_field_id', 'sub_fields.id')
+      .leftJoin('fields', 'sub_fields.field_id', 'fields.id')
       .select(
         'contents.*',
         'sub_fields.name as sub_field_name',

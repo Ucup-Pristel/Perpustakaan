@@ -65,6 +65,9 @@ router.get('/:slug/contents', async (req, res) => {
       .orderBy(['level', 'id']);
 
     // Filter by level: ?level=1 atau ?level=1,2,3
+    if (req.query.level !== undefined && typeof req.query.level !== 'string') {
+      return res.status(400).json({ status: 'error', message: 'level tidak valid' });
+    }
     if (req.query.level) {
       const levels = req.query.level.split(',').map(Number).filter(n => n >= 1 && n <= 4);
       if (levels.length) query = query.whereIn('level', levels);

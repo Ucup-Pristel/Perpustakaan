@@ -31,9 +31,13 @@ function PdfPage({ page, activePage, pageWidth, setPageRef }) {
 
 export default function Reader() {
   const { contentId } = useParams()
-  const navigate = useNavigate()
   const { token } = useAuth()
-  const cid = Number(contentId)
+  return <ReaderSession key={`${contentId}:${token || ''}`} cid={Number(contentId)} token={token} />
+}
+
+// Tiap buku/sesi memiliki observer, state, dan request sendiri.
+function ReaderSession({ cid, token }) {
+  const navigate = useNavigate()
   const [content, setContent] = useState(null)
   const [pageNumber, setPageNumber] = useState(1)
   const [numPages, setNumPages] = useState(0)
@@ -53,6 +57,7 @@ export default function Reader() {
   const documentRef = useRef(null)
   const pageRefs = useRef({})
   const restoredPage = useRef(1)
+  const noteRequest = useRef(0)
 
   useEffect(() => {
     if (!Number.isInteger(cid) || cid < 1) {
@@ -94,6 +99,11 @@ export default function Reader() {
   }, [cid, token])
 
   useEffect(() => {
+    const request = ++noteRequest.current
+    setNotesSaving(false)
+    setNotes([])
+    setNoteText('')
+    setNotesError('')
     if (!token || !Number.isInteger(cid) || cid < 1) {
       setNotes([])
       setNotesLoading(false)
@@ -110,9 +120,9 @@ export default function Reader() {
         setNotes(note ? [note] : [])
         setNoteText(note?.note_text || '')
       })
-      .catch(() => { if (!cancelled) setNotes([]) })
+      .catch(err => { if (!cancelled) setNotesError(err.message || 'Gagal memuat catatan') })
       .finally(() => { if (!cancelled) setNotesLoading(false) })
-    return () => { cancelled = true; controller.abort() }
+    return () => { cancelled = true; controller.abort(); if (noteRequest.current === request) noteRequest.current++ }
   }, [cid, pageNumber, token])
 
   const saveProgress = useCallback(async page => {
@@ -178,7 +188,8 @@ export default function Reader() {
   async function submitNote(event) {
     event.preventDefault()
     const text = noteText.trim()
-    if (!text || !token) return
+    if (!text || !token || notesLoading || notesSaving) return
+    const request = noteRequest.current
     setNotesSaving(true)
     setNotesError('')
     try {
@@ -187,12 +198,13 @@ export default function Reader() {
         token,
         body: JSON.stringify({ content_id: cid, page_number: pageNumber, note_text: text }),
       })
+      if (request !== noteRequest.current) return
       setNotes([json.data])
       setNoteText(json.data.note_text)
     } catch (err) {
-      setNotesError(err.message || 'Gagal menyimpan catatan')
+      if (request === noteRequest.current) setNotesError(err.message || 'Gagal menyimpan catatan')
     } finally {
-      setNotesSaving(false)
+      if (request === noteRequest.current) setNotesSaving(false)
     }
   }
 
@@ -236,8 +248,8 @@ export default function Reader() {
             <form onSubmit={submitNote} className="shrink-0 border-t border-amber-100 p-4">
               {notesError && <div className="mb-2 flex items-center gap-1.5 text-xs text-red-600"><AlertCircle size={12} />{notesError}<button type="button" onClick={() => setNotesError('')} className="ml-auto"><X size={12} /></button></div>}
               <p className="mb-1.5 text-[10px] text-amber-400">Catatan untuk halaman {pageNumber}</p>
-              <textarea value={noteText} onChange={event => setNoteText(event.target.value)} placeholder="Tulis catatanmu..." rows={3} className="w-full resize-none rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
-              <button type="submit" disabled={!noteText.trim() || notesSaving || !token} className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:bg-amber-200">{notesSaving ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Simpan Catatan</button>
+              <textarea value={noteText} disabled={notesLoading || notesSaving || !token} onChange={event => setNoteText(event.target.value)} placeholder="Tulis catatanmu..." rows={3} className="w-full resize-none rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
+              <button type="submit" disabled={!noteText.trim() || notesLoading || notesSaving || !token} className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:bg-amber-200">{notesSaving ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Simpan Catatan</button>
               {!token && <p className="mt-1 text-center text-[10px] text-amber-400">Login untuk menyimpan catatan</p>}
             </form>
           </div>

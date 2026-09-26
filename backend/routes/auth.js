@@ -41,6 +41,9 @@ router.post('/register', registerLimiter, async (req, res) => {
     if (password.length < 6) {
       return res.status(400).json({ status: 'error', message: 'Password minimal 6 karakter' });
     }
+    if (Buffer.byteLength(password, 'utf8') > 72) {
+      return res.status(400).json({ status: 'error', message: 'Password maksimal 72 byte' });
+    }
 
     const existing = await db('users').where({ email }).first();
     if (existing) {
@@ -48,7 +51,11 @@ router.post('/register', registerLimiter, async (req, res) => {
     }
 
     const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
-    const [id] = await db('users').insert({ email, password_hash, full_name });
+    // Unique constraint menyelesaikan race dua request dengan email yang sama.
+    const [created] = await db('users').insert({ email, password_hash, full_name })
+      .onConflict('email').ignore().returning('id');
+    if (!created) return res.status(409).json({ status: 'error', message: 'Email sudah terdaftar' });
+    const id = created.id;
     res.status(201).json({ status: 'success', message: 'Registrasi berhasil', data: { id, email, full_name } });
   } catch (err) {
     console.error('[register]', err);
@@ -70,6 +77,9 @@ router.post('/login', authLimiter, async (req, res) => {
 
     if (!email || !password) {
       return res.status(400).json({ status: 'error', message: 'email dan password wajib diisi' });
+    }
+    if (Buffer.byteLength(password, 'utf8') > 72) {
+      return res.status(400).json({ status: 'error', message: 'Password maksimal 72 byte' });
     }
     if (!EMAIL_RE.test(email)) {
       return res.status(400).json({ status: 'error', message: 'Format email tidak valid' });

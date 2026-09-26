@@ -237,10 +237,11 @@ router.post(
       const coverUrl = await uploadToR2(coverFile.path, coverFile.originalname, 'covers');
 
       try {
-        await db('contents').where('id', req.params.id).update({
+        const changed = await db('contents').where({ id: existing.id, cover_url: existing.cover_url }).update({
           cover_url: coverUrl,
           updated_at: new Date().toISOString(),
         });
+        if (!changed) throw Object.assign(new Error('Konten berubah atau dihapus; muat ulang sebelum mencoba lagi'), { status: 409 });
       } catch (err) {
         // DB gagal setelah file masuk R2: buang object baru itu, kalau tidak
         // bucket menyimpan file yang tidak direferensikan baris mana pun.
@@ -257,7 +258,7 @@ router.post(
       res.json({ status: 'success', message: 'Cover berhasil diperbarui', data: { id: existing.id, cover_url: coverUrl } });
     } catch (err) {
       console.error('[admin/cover]', err);
-      res.status(500).json({ status: 'error', message: err.message || 'Upload cover gagal' });
+      res.status(err.status === 409 ? 409 : 500).json({ status: 'error', message: err.message || 'Upload cover gagal' });
     } finally {
       cleanupTmp(coverFile);
     }
@@ -267,14 +268,18 @@ router.post(
 // DELETE /api/admin/contents/:id
 router.delete('/contents/:id', isAdmin, async (req, res) => {
   try {
-    const row = await db('contents').where('id', req.params.id).first('file_url', 'cover_url');
+    const row = await db.transaction(async trx => {
+      const content = await trx('contents').where('id', req.params.id).first('file_url', 'cover_url');
+      if (content) await trx('contents').where('id', req.params.id).del();
+      return content;
+    });
     if (!row) return res.status(404).json({ status: 'error', message: 'Konten tidak ditemukan' });
 
-    // Hapus file fisik di R2 dulu — kalau gagal (bukan 404), jangan lanjut hapus baris DB
-    await deleteFromR2(row.file_url);
-    await deleteFromR2(row.cover_url);
-
-    await db('contents').where('id', req.params.id).del();
+    // ponytail: cleanup best-effort; tambahkan durable retry jika orphan harus nol.
+    // DB lebih dulu: kegagalan cover tidak boleh meninggalkan PDF hilang di katalog.
+    for (const url of [row.file_url, row.cover_url]) {
+      await deleteFromR2(url).catch(err => console.error('[admin/delete] cleanup R2 gagal:', url, err.message));
+    }
     res.json({ status: 'success', message: 'Konten dihapus' });
   } catch (err) {
     console.error('[admin/delete]', err);
