@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
@@ -15,18 +15,43 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString()
 
-function PdfPage({ page, activePage, pageWidth, setPageRef }) {
-  const renderPage = pageWidth > 0 && Math.abs(page - activePage) <= 2
+const RESIZE_SETTLE_MS = 150
+const NOTES_DEBOUNCE_MS = 300
 
+// Slot halaman selalu setinggi halaman aslinya (lebar × rasio halaman), baik
+// canvas ter-render maupun placeholder. Tanpa ini, perpindahan jendela render
+// ±2 halaman mengubah tinggi dokumen saat scroll → halaman lompat/berkedip.
+const PdfPage = memo(function PdfPage({ page, render, pageWidth, ratio, setPageRef }) {
   return (
     <section
       ref={element => setPageRef(page, element)}
       data-page={page}
-      className="flex min-h-[860px] w-full scroll-mt-6 flex-col items-center justify-center rounded-2xl bg-white p-4 shadow-lg sm:p-6"
+      className="flex w-full scroll-mt-6 flex-col items-center rounded-2xl bg-white p-4 shadow-lg sm:p-6"
     >
-      {renderPage ? <Page pageNumber={page} width={pageWidth} renderTextLayer renderAnnotationLayer /> : <span className="text-sm text-amber-400">Halaman {page}</span>}
+      <div className="flex items-center justify-center overflow-hidden" style={{ width: pageWidth, height: Math.floor(pageWidth * ratio) }}>
+        {render ? <Page pageNumber={page} width={pageWidth} renderTextLayer renderAnnotationLayer /> : <span className="text-sm text-amber-400">Halaman {page}</span>}
+      </div>
     </section>
   )
+})
+
+// Posisi baca relatif terhadap slot pertama yang terlihat, supaya bisa
+// dipulihkan setelah lebar halaman (dan semua tinggi slot) berubah.
+function captureAnchor(main, slots) {
+  if (!main) return null
+  const top = main.getBoundingClientRect().top
+  for (const element of Object.values(slots)) {
+    const rect = element.getBoundingClientRect()
+    if (rect.bottom > top) return { page: element.dataset.page, offset: (top - rect.top) / rect.height }
+  }
+  return null
+}
+
+function restoreAnchor(main, slots, anchor) {
+  const element = slots[anchor.page]
+  if (!element) return
+  const rect = element.getBoundingClientRect()
+  main.scrollTop += rect.top - main.getBoundingClientRect().top + anchor.offset * rect.height
 }
 
 export default function Reader() {
@@ -40,7 +65,9 @@ function ReaderSession({ cid, token }) {
   const navigate = useNavigate()
   const [content, setContent] = useState(null)
   const [pageNumber, setPageNumber] = useState(1)
-  const [numPages, setNumPages] = useState(0)
+  // Rasio tinggi/lebar tiap halaman; slot baru dirender setelah semua terukur.
+  const [pageRatios, setPageRatios] = useState([])
+  const numPages = pageRatios.length
   const [savedPage, setSavedPage] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -52,12 +79,15 @@ function ReaderSession({ cid, token }) {
   const [notesLoading, setNotesLoading] = useState(true)
   const [notesSaving, setNotesSaving] = useState(false)
   const [notesError, setNotesError] = useState('')
-  const [containerWidth, setContainerWidth] = useState(0)
+  const [pageWidth, setPageWidth] = useState(0)
   const readerRef = useRef(null)
-  const documentRef = useRef(null)
   const pageRefs = useRef({})
   const restoredPage = useRef(1)
+  const restoredScroll = useRef(false)
   const noteRequest = useRef(0)
+  const widthRef = useRef(0)
+  const scrollAnchor = useRef(null)
+  const ready = numPages > 0 && pageWidth > 0
 
   useEffect(() => {
     if (!Number.isInteger(cid) || cid < 1) {
@@ -113,16 +143,25 @@ function ReaderSession({ cid, token }) {
     let cancelled = false
     const controller = new AbortController()
     setNotesLoading(true)
-    apiFetch(`/api/activity/notes/${cid}?page_number=${pageNumber}`, { token, signal: controller.signal })
-      .then(json => {
-        if (cancelled) return
-        const note = json.data?.[0]
-        setNotes(note ? [note] : [])
-        setNoteText(note?.note_text || '')
-      })
-      .catch(err => { if (!cancelled) setNotesError(err.message || 'Gagal memuat catatan') })
-      .finally(() => { if (!cancelled) setNotesLoading(false) })
-    return () => { cancelled = true; controller.abort(); if (noteRequest.current === request) noteRequest.current++ }
+    // Scroll cepat melewati banyak halaman: tunggu halaman diam dulu, jangan
+    // kirim lalu batalkan satu request untuk tiap halaman yang hanya lewat.
+    const timer = window.setTimeout(() => {
+      apiFetch(`/api/activity/notes/${cid}?page_number=${pageNumber}`, { token, signal: controller.signal })
+        .then(json => {
+          if (cancelled) return
+          const note = json.data?.[0]
+          setNotes(note ? [note] : [])
+          setNoteText(note?.note_text || '')
+        })
+        .catch(err => { if (!cancelled) setNotesError(err.message || 'Gagal memuat catatan') })
+        .finally(() => { if (!cancelled) setNotesLoading(false) })
+    }, NOTES_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      controller.abort()
+      if (noteRequest.current === request) noteRequest.current++
+    }
   }, [cid, pageNumber, token])
 
   const saveProgress = useCallback(async page => {
@@ -156,18 +195,45 @@ function ReaderSession({ cid, token }) {
     else delete pageRefs.current[page]
   }, [])
 
-  useEffect(() => {
-    const element = documentRef.current
+  // Callback ref: wrapper dokumen baru ada setelah <Document> selesai memuat PDF.
+  const documentRef = useCallback(element => {
     if (!element) return
+    let timer = 0
     const observer = new ResizeObserver(([entry]) => {
-      setContainerWidth(Math.max(0, Math.floor(entry.contentRect.width - 32)))
+      const width = Math.max(0, Math.floor(entry.contentRect.width - 32))
+      const apply = () => {
+        if (widthRef.current === width) return
+        // Lebar baru mengubah tinggi semua slot; simpan posisi baca untuk
+        // dipulihkan di layout effect sebelum paint.
+        if (widthRef.current) scrollAnchor.current = captureAnchor(readerRef.current, pageRefs.current)
+        widthRef.current = width
+        setPageWidth(width)
+      }
+      window.clearTimeout(timer)
+      // Lebar pertama langsung dipakai. Perubahan berikutnya (animasi sidebar,
+      // resize window) ditunggu reda supaya tinggi slot tidak berubah per frame.
+      if (!widthRef.current) apply()
+      else timer = window.setTimeout(apply, RESIZE_SETTLE_MS)
     })
     observer.observe(element)
-    return () => observer.disconnect()
-  }, [content])
+    return () => { window.clearTimeout(timer); observer.disconnect() }
+  }, [])
+
+  useLayoutEffect(() => {
+    const anchor = scrollAnchor.current
+    scrollAnchor.current = null
+    if (anchor) restoreAnchor(readerRef.current, pageRefs.current, anchor)
+  }, [pageWidth])
+
+  // Scroll ke halaman tersimpan sekali, begitu slot pertama kali punya tinggi final.
+  useLayoutEffect(() => {
+    if (!ready || restoredScroll.current) return
+    restoredScroll.current = true
+    pageRefs.current[Math.min(restoredPage.current, numPages)]?.scrollIntoView({ block: 'start' })
+  }, [ready, numPages])
 
   useEffect(() => {
-    if (!numPages || !readerRef.current) return
+    if (!ready || !readerRef.current) return
     const observer = new IntersectionObserver(entries => {
       const visible = entries
         .filter(entry => entry.isIntersecting && entry.intersectionRatio >= 0.5)
@@ -177,12 +243,22 @@ function ReaderSession({ cid, token }) {
 
     Object.values(pageRefs.current).forEach(element => observer.observe(element))
     return () => observer.disconnect()
-  }, [numPages])
+  }, [ready])
 
-  function onDocumentLoadSuccess({ numPages: total }) {
-    setNumPages(total)
-    const page = Math.min(restoredPage.current, total)
-    requestAnimationFrame(() => pageRefs.current[page]?.scrollIntoView({ block: 'start' }))
+  function onDocumentLoadSuccess(pdf) {
+    // ponytail: getPage untuk semua halaman sekaligus (hanya metadata, tanpa
+    // render). Cukup untuk ratusan halaman; bila PDF ribuan halaman terasa
+    // lambat, ukur bertahap mulai dari halaman tersimpan.
+    Promise.all(Array.from({ length: pdf.numPages }, (_, index) => pdf.getPage(index + 1)
+      .then(page => {
+        const { width, height } = page.getViewport({ scale: 1 })
+        return height / width
+      })
+      .catch(() => null)))
+      .then(ratios => {
+        const fallback = ratios.find(Boolean) || Math.SQRT2
+        setPageRatios(ratios.map(ratio => ratio || fallback))
+      })
   }
 
   async function submitNote(event) {
@@ -227,13 +303,16 @@ function ReaderSession({ cid, token }) {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <main ref={readerRef} className="flex-1 overflow-y-auto px-4 py-6 md:px-8">
+        {/* scrollbar-gutter stable: lebar tidak menyusut saat scrollbar muncul setelah slot dirender.
+            overflow-x-hidden: selama animasi sidebar, slot masih memakai lebar lama sampai resize reda. */}
+        <main ref={readerRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-6 [scrollbar-gutter:stable] md:px-8">
           {loading && <div className="flex justify-center pt-20"><Loader2 className="animate-spin text-amber-600" /></div>}
           {error && <div className="mx-auto max-w-2xl rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">{error}</div>}
           {!loading && !error && content && (
             <Document file={content.file_url} onLoadSuccess={onDocumentLoadSuccess} loading={<div className="flex justify-center py-20"><Loader2 className="animate-spin text-amber-600" /></div>} error={<p className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">PDF gagal dimuat. Pastikan file dapat diakses dari browser.</p>}>
               <div ref={documentRef} className="mx-auto flex w-full max-w-5xl flex-col gap-2">
-                {Array.from({ length: numPages }, (_, index) => <PdfPage key={index + 1} page={index + 1} activePage={pageNumber} pageWidth={containerWidth} setPageRef={setPageRef} />)}
+                {!ready && <div className="flex justify-center py-20"><Loader2 className="animate-spin text-amber-600" /></div>}
+                {ready && pageRatios.map((ratio, index) => <PdfPage key={index + 1} page={index + 1} render={Math.abs(index + 1 - pageNumber) <= 2} pageWidth={pageWidth} ratio={ratio} setPageRef={setPageRef} />)}
               </div>
             </Document>
           )}
