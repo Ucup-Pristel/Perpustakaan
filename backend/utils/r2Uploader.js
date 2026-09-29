@@ -21,6 +21,36 @@ const MIME_MAP = {
   '.gif':  'image/gif',
 };
 
+function getPublicBase() {
+  const configured = typeof process.env.R2_PUBLIC_URL === 'string'
+    ? process.env.R2_PUBLIC_URL.trim()
+    : '';
+  if (!configured) return null;
+
+  try {
+    const url = new URL(configured);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const pathPrefix = url.pathname.replace(/^\/+|\/+$/g, '');
+    return {
+      origin: url.origin,
+      pathPrefix,
+      value: `${url.origin}${pathPrefix ? `/${pathPrefix}` : ''}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRelativeKey(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('//')) return null;
+  if (/^[a-z][a-z\d+.-]*:/i.test(trimmed)) return null;
+
+  const key = trimmed.replace(/^\/+/, '');
+  return key || null;
+}
+
 /**
  * Upload file dari disk ke R2 dengan nama unik (timestamp + random).
  * Stream dari path, tidak load seluruh file ke memori.
@@ -39,16 +69,24 @@ async function uploadToR2(filePath, originalName, folder = 'uploads') {
     .replace(/\s+/g, '_') || 'file';
   const key    = `${folder}/${base}-${uid}${ext}`;
   const mime   = MIME_MAP[ext] || 'application/octet-stream';
+  const contentLength = fs.statSync(filePath).size;
+  const body = fs.createReadStream(filePath);
 
-  await client.send(new PutObjectCommand({
-    Bucket:      process.env.R2_BUCKET_NAME,
-    Key:         key,
-    Body:        fs.createReadStream(filePath),
-    ContentType: mime,
-    ContentLength: fs.statSync(filePath).size,
-  }));
+  try {
+    await client.send(new PutObjectCommand({
+      Bucket:      process.env.R2_BUCKET_NAME,
+      Key:         key,
+      Body:        body,
+      ContentType: mime,
+      ContentLength: contentLength,
+    }));
+  } catch (err) {
+    if (!body.destroyed) body.destroy();
+    throw err;
+  }
 
-  return `${process.env.R2_PUBLIC_URL}/${key}`;
+  const publicBase = getPublicBase();
+  return `${publicBase?.value || ''}/${key}`;
 }
 
 /**
@@ -58,9 +96,31 @@ async function uploadToR2(filePath, originalName, folder = 'uploads') {
  * @returns {string|null}
  */
 function extractR2Key(fileUrl) {
-  if (!fileUrl) return null;
-  const prefix = `${process.env.R2_PUBLIC_URL}/`;
-  return fileUrl.startsWith(prefix) ? fileUrl.slice(prefix.length) : null;
+  if (typeof fileUrl !== 'string') return null;
+  const value = fileUrl.trim();
+  if (!value || value === '/' || value.startsWith('//')) return null;
+
+  if (/^https?:\/\//i.test(value)) {
+    const publicBase = getPublicBase();
+    if (!publicBase) return null;
+
+    try {
+      const url = new URL(value);
+      if (url.origin !== publicBase.origin) return null;
+
+      let key = url.pathname.replace(/^\/+/, '');
+      if (publicBase.pathPrefix) {
+        const prefix = `${publicBase.pathPrefix}/`;
+        if (!key.startsWith(prefix)) return null;
+        key = key.slice(prefix.length);
+      }
+      return normalizeRelativeKey(key);
+    } catch {
+      return null;
+    }
+  }
+
+  return normalizeRelativeKey(value);
 }
 
 /**

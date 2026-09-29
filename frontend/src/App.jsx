@@ -6,6 +6,8 @@ import Navbar from './components/Navbar'
 import Home from './components/Home'
 import Login from './pages/Login'
 import Register from './pages/Register'
+import ForgotPassword from './pages/ForgotPassword'
+import ResetPassword from './pages/ResetPassword'
 
 // Reader menarik react-pdf + pdf.worker (bagian terbesar bundle) dan hanya dipakai
 // di satu route. Dipisah lewat lazy() supaya halaman awal tidak ikut mengunduhnya.
@@ -73,6 +75,8 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/search" element={<SearchResults />} />
             <Route path="/read/:contentId" element={<Reader />} />
             <Route path="/field/:fieldId" element={<ContentList />} />

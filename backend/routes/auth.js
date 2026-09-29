@@ -5,10 +5,17 @@
  */
 
 const router = require('express').Router();
+const crypto = require('node:crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../models/db');
-const { authLimiter, registerLimiter } = require('../middleware/rateLimiters');
+const {
+  authLimiter,
+  registerLimiter,
+  forgotPasswordLimiter,
+  resetPasswordLimiter,
+} = require('../middleware/rateLimiters');
+const { getPasswordResetConfig, sendPasswordResetEmail } = require('../utils/mailer');
 
 const SECRET = () => process.env.JWT_SECRET;
 const SALT_ROUNDS = 10;
@@ -24,6 +31,149 @@ const str = v => (typeof v === 'string' ? v.trim() : '');
 
 // Regex email sederhana — cukup untuk trust boundary ini
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
+const FORGOT_MIN_RESPONSE_MS = process.env.NODE_ENV === 'test' ? 0 : 500;
+const FORGOT_SUCCESS = {
+  status: 'success',
+  message: 'Jika email terdaftar, instruksi reset password akan dikirim. Periksa inbox dan folder spam.',
+};
+const RESET_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+const RESET_ERROR = 'Token reset tidak valid atau telah kadaluarsa';
+
+const delayUntil = async (startedAt, minimumMs) => {
+  const remaining = minimumMs - (Date.now() - startedAt);
+  if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
+};
+
+const deliverPasswordResetEmail = async ({ user, tokenHash, resetUrl }) => {
+  try {
+    await sendPasswordResetEmail({ to: user.email, resetUrl });
+  } catch (err) {
+    // Network timeouts are ambiguous: Resend may have accepted the message
+    // before the connection failed, so keep the token available in that case.
+    // Definite provider rejection removes the unused token instead.
+    if (!err.retryable) {
+      await db('password_reset_tokens').where({ token_hash: tokenHash }).del().catch(() => {});
+    }
+    console.error('[forgot-password] pengiriman email gagal:', err.code || err.name, err.status || '');
+  }
+};
+
+// POST /api/auth/forgot-password
+router.post('/forgot-password', forgotPasswordLimiter, async (req, res) => {
+  const startedAt = Date.now();
+  const config = getPasswordResetConfig();
+  if (!config) {
+    console.error('[forgot-password] konfigurasi email belum lengkap');
+    return res.status(503).json({ status: 'error', message: 'Layanan reset password belum tersedia' });
+  }
+
+  const email = str(req.body?.email).toLowerCase();
+  if (!email || !EMAIL_RE.test(email)) {
+    return res.status(400).json({ status: 'error', message: 'Format email tidak valid' });
+  }
+
+  // Kerja kriptografi dilakukan untuk email terdaftar maupun tidak agar jalur
+  // cepat tidak langsung membocorkan keberadaan akun.
+  const rawToken = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+  try {
+    const user = await db('users').where({ email }).first('id', 'email');
+    if (user) {
+      await db.transaction(async (trx) => {
+        // PostgreSQL perlu mengunci baris user agar dua request bersamaan tidak
+        // sama-sama menghapus keadaan lama lalu menyisakan dua token aktif.
+        await trx('users').where({ id: user.id }).forUpdate().first('id');
+        await trx('password_reset_tokens')
+          .where({ user_id: user.id })
+          .whereNull('used_at')
+          .del();
+        await trx('password_reset_tokens').insert({
+          user_id: user.id,
+          token_hash: tokenHash,
+          expires_at: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+        });
+      });
+
+      const resetUrl = new URL('/reset-password', config.resetBaseUrl);
+      resetUrl.searchParams.set('token', rawToken);
+      // Jangan menunggu latency provider sebelum mengirim respons generic.
+      void deliverPasswordResetEmail({ user, tokenHash, resetUrl: resetUrl.toString() });
+    }
+  } catch (err) {
+    // Respons tetap generik: error internal pada jalur akun terdaftar tidak boleh
+    // berubah menjadi oracle keberadaan akun.
+    console.error('[forgot-password] proses gagal:', err.code || err.name);
+  }
+
+  await delayUntil(startedAt, FORGOT_MIN_RESPONSE_MS);
+  return res.json(FORGOT_SUCCESS);
+});
+
+// POST /api/auth/reset-password
+router.post('/reset-password', resetPasswordLimiter, async (req, res) => {
+  const token = str(req.body?.token);
+  const password = str(req.body?.password);
+
+  if (!RESET_TOKEN_RE.test(token)) {
+    return res.status(400).json({ status: 'error', message: RESET_ERROR });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ status: 'error', message: 'Password minimal 6 karakter' });
+  }
+  if (Buffer.byteLength(password, 'utf8') > 72) {
+    return res.status(400).json({ status: 'error', message: 'Password maksimal 72 byte' });
+  }
+
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  try {
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    await db.transaction(async (trx) => {
+      const now = new Date();
+      const claimed = await trx('password_reset_tokens')
+        .where({ token_hash: tokenHash })
+        .whereNull('used_at')
+        .andWhere('expires_at', '>', now)
+        .update({ used_at: now });
+      if (claimed !== 1) {
+        const error = new Error(RESET_ERROR);
+        error.code = 'RESET_TOKEN_INVALID';
+        throw error;
+      }
+
+      const resetToken = await trx('password_reset_tokens')
+        .where({ token_hash: tokenHash })
+        .first('user_id');
+      if (!resetToken) {
+        const error = new Error(RESET_ERROR);
+        error.code = 'RESET_TOKEN_INVALID';
+        throw error;
+      }
+
+      const updated = await trx('users')
+        .where({ id: resetToken.user_id })
+        .update({
+          password_hash: passwordHash,
+          session_version: trx.raw('?? + 1', ['session_version']),
+        });
+      if (updated !== 1) {
+        const error = new Error(RESET_ERROR);
+        error.code = 'RESET_TOKEN_INVALID';
+        throw error;
+      }
+    });
+
+    return res.json({ status: 'success', message: 'Password berhasil direset' });
+  } catch (err) {
+    if (err.code === 'RESET_TOKEN_INVALID') {
+      return res.status(400).json({ status: 'error', message: RESET_ERROR });
+    }
+    console.error('[reset-password] proses gagal:', err.code || err.name);
+    return res.status(500).json({ status: 'error', message: 'Gagal mereset password' });
+  }
+});
 
 // POST /api/auth/register
 router.post('/register', registerLimiter, async (req, res) => {
@@ -102,12 +252,12 @@ router.post('/login', authLimiter, async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
+      { id: user.id, email: user.email, role: user.role, sv: user.session_version ?? 0 },
       SECRET(),
       { expiresIn: '7d' }
     );
 
-    const { password_hash: _, ...profile } = user;
+    const { password_hash: _, session_version: __, ...profile } = user;
     res.json({ status: 'success', token, data: profile });
   } catch (err) {
     console.error('[login]', err);

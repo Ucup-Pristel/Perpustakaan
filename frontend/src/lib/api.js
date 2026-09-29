@@ -53,7 +53,7 @@ export async function apiFetch(path, { token, headers, ...opts } = {}) {
 
   if (token) {
     if (isTokenExpired(token)) {
-      onUnauthorized?.()
+      onUnauthorized?.(token)
       throw new ApiError('Sesi berakhir. Silakan masuk kembali.', 401)
     }
     finalHeaders.Authorization = `Bearer ${token}`
@@ -73,8 +73,9 @@ export async function apiFetch(path, { token, headers, ...opts } = {}) {
     throw new ApiError('Tidak dapat menghubungi server. Cek koneksi internet.', 0)
   }
 
-  if (res.status === 401) {
-    onUnauthorized?.()
+  const authenticatedUnauthorized = res.status === 401 && Boolean(token)
+  if (authenticatedUnauthorized) {
+    onUnauthorized?.(token)
     throw new ApiError('Sesi berakhir. Silakan masuk kembali.', 401)
   }
 

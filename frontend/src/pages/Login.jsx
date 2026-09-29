@@ -76,6 +76,10 @@ export default function Login() {
             />
           </div>
 
+          <p className="-mt-2 text-right text-xs">
+            <Link to="/forgot-password" className="text-amber-700 font-semibold hover:underline">Lupa password?</Link>
+          </p>
+
           <button
             type="submit"
             disabled={loading}
