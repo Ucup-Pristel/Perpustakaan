@@ -17,9 +17,17 @@ const verifyToken = async (req, res, next) => {
 
   try {
     // JWT membuktikan identitas, bukan role yang masih berlaku tujuh hari kemudian.
-    const user = await db('users').where('id', decoded.id).first('id', 'email', 'role');
+    const user = await db('users').where('id', decoded.id).first('id', 'email', 'role', 'session_version');
     if (!user) return res.status(401).json({ status: "error", message: "Sesi tidak valid atau telah kadaluarsa!" });
-    req.user = user;
+    // JWT lama tidak memiliki `sv`; selama nilai DB masih 0, perlakukan sebagai
+    // versi 0 agar deploy fitur ini tidak logout semua pengguna sekaligus.
+    const tokenSessionVersion = decoded.sv === undefined ? 0 : decoded.sv;
+    const currentSessionVersion = user.session_version ?? 0;
+    if (!Number.isSafeInteger(tokenSessionVersion) || tokenSessionVersion < 0 || tokenSessionVersion !== currentSessionVersion) {
+      return res.status(401).json({ status: "error", message: "Sesi tidak valid atau telah kadaluarsa!" });
+    }
+    const { session_version: _, ...requestUser } = user;
+    req.user = requestUser;
     next();
   } catch (err) {
     next(err);

@@ -3,6 +3,8 @@
  * globalLimiter   — semua route, 500 req/15m per IP
  * authLimiter     — /api/auth/login, 5 req/15m per IP (anti brute-force)
  * registerLimiter — /api/auth/register, 10 req/jam per IP
+ * forgotPasswordLimiter — /api/auth/forgot-password, 5 req/jam per IP
+ * resetPasswordLimiter  — /api/auth/reset-password, 10 req/jam per IP
  * uploadLimiter   — /api/admin/upload, 10 req/jam per IP (anti spam R2)
  *
  * Semua limiter bergantung pada req.ip yang benar. req.ip ditentukan oleh
@@ -26,6 +28,15 @@ const authLimiter = makeLimiter(15 * 60 * 1000, 5, 'Terlalu banyak percobaan log
 // CPU) dan membuat baris users baru, jadi tanpa limiter endpoint ini bisa dipakai
 // untuk spam akun sekaligus membebani server.
 const registerLimiter = makeLimiter(60 * 60 * 1000, 10, 'Terlalu banyak pendaftaran dari jaringan ini, coba lagi nanti.');
+const forgotPasswordLimiter = makeLimiter(60 * 60 * 1000, 5, 'Terlalu banyak permintaan reset password, coba lagi nanti.');
+const resetPasswordLimiter = makeLimiter(60 * 60 * 1000, 10, 'Terlalu banyak percobaan reset password, coba lagi nanti.');
 const uploadLimiter = makeLimiter(60 * 60 * 1000, 10, 'Batas upload tercapai, coba lagi nanti.');
 
-module.exports = { globalLimiter, authLimiter, registerLimiter, uploadLimiter };
+module.exports = {
+  globalLimiter,
+  authLimiter,
+  registerLimiter,
+  forgotPasswordLimiter,
+  resetPasswordLimiter,
+  uploadLimiter,
+};
