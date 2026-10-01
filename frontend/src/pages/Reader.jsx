@@ -25,19 +25,18 @@ const PROTECT = 2
 // - IMMEDIATE_AHEAD halaman di depan langsung di-mount (frame berikutnya, tanpa
 //   menunggu idle), supaya selalu ada beberapa halaman siap di depan pembaca;
 // - sampai AHEAD halaman disiapkan bertahap AHEAD_BATCH per browser idle.
-// Scroll maju satu halaman hanya menambah satu render baru, ~6+ viewport di depan.
-const IMMEDIATE_AHEAD = 6
-const AHEAD = 10
+// Scroll maju satu halaman hanya menambah satu render baru, ~4+ viewport di depan.
+// Jangan turunkan lagi tanpa uji manual: di bawah ini scroll berurutan mulai
+// menyusul render PDF.js dan placeholder kembali terlihat.
+const IMMEDIATE_AHEAD = 4
+const AHEAD = 6
 const AHEAD_BATCH = 2
-// Batas halaman ter-mount (canvas PDF). Jendela = 2 di belakang + aktif + 10 di
-// depan = 13; 3 slot sisanya menahan halaman yang baru dilewati (total ±5 di
+// Batas halaman ter-mount (canvas PDF). Jendela = 2 di belakang + aktif + 6 di
+// depan = 9; 3 slot sisanya menahan halaman yang baru dilewati (total ±5 di
 // belakang), jadi scroll bolak-balik di sekitarnya tidak me-mount ulang canvas.
 // ponytail: memori canvas ≈ MAX_RESIDENT × lebar × tinggi × DPR² × 4 byte
-// (±340 MB terburuk di lebar 992px DPR 2, ±190 MB di DPR 1.5, ±85 MB di DPR 1).
-// Turunkan AHEAD / MAX_RESIDENT bila perangkat memori kecil mulai tersendat.
-const MAX_RESIDENT = 16
-// Rasio halaman diukur bertahap di latar belakang, sekian halaman per batch.
-const MEASURE_BATCH = 24
+// (±250 MB terburuk di lebar 992px DPR 2, ±140 MB di DPR 1.5, ±65 MB di DPR 1).
+const MAX_RESIDENT = 12
 // ponytail: batas DPR 2 menahan memori canvas di layar DPR 3. Naikkan bila
 // teks terasa kurang tajam di ponsel kelas atas.
 const MAX_DPR = 2
@@ -96,7 +95,7 @@ const PdfPage = memo(function PdfPage({ page, render, pageWidth, renderWidth, ra
 // Jendela [aktif − PROTECT, aktif + reach] ditambahkan/diperbarui. Bila melebihi
 // MAX_RESIDENT, hanya halaman di luar jendela yang boleh dilepas: yang paling
 // jauh dari halaman aktif lebih dulu (seri: yang paling lama tidak terlihat).
-// Jendela ≤ 13 < MAX_RESIDENT, jadi jendela sendiri tidak pernah terpotong.
+// Jendela ≤ 9 < MAX_RESIDENT, jadi jendela sendiri tidak pernah terpotong.
 function nextResident(prev, active, total, tick, reach) {
   const lo = Math.max(1, active - PROTECT)
   const hi = Math.min(total, active + reach)
@@ -123,9 +122,9 @@ function nextRenderWidth(prev, width, widest) {
 }
 
 // Ukur rasio tinggi/lebar halaman. Satu getPage() per halaman per sesi:
-// promise disimpan di `pending` sehingga pengukuran yang tumpang-tindih (jendela
-// render + antrean latar belakang) memakai hasil yang sama. pdf.js juga
-// meng-cache PDFPageProxy, jadi <Page> nanti tidak meminta ulang ke worker.
+// promise disimpan di `pending` sehingga pengukuran yang tumpang-tindih memakai
+// hasil yang sama. pdf.js juga meng-cache PDFPageProxy, jadi <Page> nanti tidak
+// meminta ulang ke worker. Hanya halaman yang didekati pembaca yang diukur.
 function measureRatios(pdf, pages, { pending, ratios }) {
   return Promise.all(pages.map(page => {
     if (!pending.has(page)) {
@@ -163,11 +162,37 @@ function captureAnchor(main, slots) {
   return rect ? { page: lo, offset: (top - rect.top) / rect.height } : null
 }
 
+// Untuk koreksi rasio (tinggi satu slot berubah, bukan semua): pakai tepi atas
+// slot pertama yang mulai di dalam viewport, dalam piksel. Anchor pecahan di
+// atas akan ikut bergeser bila slot anchor sendiri yang tingginya dikoreksi.
+function captureEdgeAnchor(main, slots) {
+  const total = Object.keys(slots).length
+  if (!main || !total) return null
+  const box = main.getBoundingClientRect()
+  let lo = 1
+  let hi = total + 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    const rect = slots[mid]?.getBoundingClientRect()
+    if (!rect) return null
+    if (rect.top >= box.top) hi = mid
+    else lo = mid + 1
+  }
+  // Tidak ada slot yang mulai di viewport (satu slot tinggi menutupi semuanya):
+  // pakai slot yang memuat tepi atas viewport.
+  const rect = slots[lo]?.getBoundingClientRect()
+  const page = rect && rect.top < box.bottom ? lo : Math.max(1, lo - 1)
+  const anchorRect = slots[page]?.getBoundingClientRect()
+  return anchorRect ? { page, px: anchorRect.top - box.top } : null
+}
+
 function restoreAnchor(main, slots, anchor) {
   const element = slots[anchor.page]
   if (!element) return
   const rect = element.getBoundingClientRect()
-  main.scrollTop += rect.top - main.getBoundingClientRect().top + anchor.offset * rect.height
+  const top = main.getBoundingClientRect().top
+  if (anchor.px !== undefined) main.scrollTop += rect.top - top - anchor.px
+  else main.scrollTop += rect.top - top + anchor.offset * rect.height
 }
 
 export default function Reader() {
@@ -182,7 +207,7 @@ function ReaderSession({ cid, token }) {
   const [content, setContent] = useState(null)
   const [pageNumber, setPageNumber] = useState(1)
   // Rasio tinggi/lebar tiap halaman. Yang belum terukur memakai estimasi dari
-  // halaman tersimpan; diganti nilai asli saat pengukuran latar belakang tiba.
+  // halaman tersimpan; diganti nilai asli saat halaman itu didekati.
   const [pageRatios, setPageRatios] = useState([])
   const numPages = pageRatios.length
   const [resident, setResident] = useState({ active: 0, total: 0, reach: PROTECT, tick: 0, pages: new Map() })
@@ -399,12 +424,14 @@ function ReaderSession({ cid, token }) {
       return measured
     })
     if (!changed) return
-    scrollAnchor.current = captureAnchor(readerRef.current, pageRefs.current)
+    scrollAnchor.current = captureEdgeAnchor(readerRef.current, pageRefs.current)
     setPageRatios(next)
   }, [])
 
-  // Halaman yang masuk set ter-mount diukur lebih dulu dari antrean latar
-  // belakang, supaya slot yang tampil tidak pernah memakai estimasi.
+  // Metadata berbasis permintaan: hanya halaman yang masuk set ter-mount
+  // (halaman aktif, ±PROTECT, jendela depan, tujuan lompatan) yang diukur.
+  // Halaman jauh tetap memakai estimasi; koreksi tinggi saat halaman itu
+  // didekati dijaga anchor scroll di flushRatios.
   useEffect(() => {
     const pdf = pdfRef.current
     if (!pdf) return
@@ -425,16 +452,37 @@ function ReaderSession({ cid, token }) {
     // Halaman aktif = slot yang memotong garis tengah viewport. Ambang
     // intersectionRatio 0.5 tidak pernah tercapai bila halaman lebih dari dua
     // kali tinggi viewport (layar pendek), sehingga halaman aktif macet.
-    // ponytail: halaman terakhir yang lebih pendek dari setengah viewport tidak
-    // pernah menyentuh garis tengah; tambahkan cek "scroll di dasar" bila perlu.
+    const main = readerRef.current
+    // Halaman terakhir yang pendek bisa tidak pernah menyentuh garis tengah.
+    // Di dasar scroll, halaman terakhir dianggap aktif supaya progres 100%.
+    const atBottom = () => main.scrollHeight > main.clientHeight && main.scrollTop + main.clientHeight >= main.scrollHeight - 2
     const observer = new IntersectionObserver(entries => {
+      if (atBottom()) return setPageNumber(numPages)
       const visible = entries.find(entry => entry.isIntersecting)
       if (visible) setPageNumber(Number(visible.target.dataset.page))
-    }, { root: readerRef.current, rootMargin: '-50% 0px -50% 0px', threshold: 0 })
+    }, { root: main, rootMargin: '-50% 0px -50% 0px', threshold: 0 })
+
+    // Observer hanya melapor saat slot melintasi garis tengah; mencapai/
+    // meninggalkan dasar tanpa lintasan itu ditangani di sini.
+    let wasAtBottom = false
+    function onScroll() {
+      const bottom = atBottom()
+      if (bottom) setPageNumber(numPages)
+      else if (wasAtBottom) {
+        const rect = main.getBoundingClientRect()
+        const slot = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('[data-page]')
+        if (slot) setPageNumber(Number(slot.dataset.page))
+      }
+      wasAtBottom = bottom
+    }
 
     Object.values(pageRefs.current).forEach(element => observer.observe(element))
-    return () => observer.disconnect()
-  }, [ready])
+    main.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      observer.disconnect()
+      main.removeEventListener('scroll', onScroll)
+    }
+  }, [ready, numPages])
 
   async function onDocumentLoadSuccess(pdf) {
     // StrictMode memanggil efek onLoadSuccess react-pdf dua kali untuk pdf yang sama.
@@ -453,27 +501,6 @@ function ReaderSession({ cid, token }) {
     const estimate = ratios.get(start) || ratios.values().next().value || Math.SQRT2
     setPageRatios(Array.from({ length: total }, (_, index) => ratios.get(index + 1) || estimate))
   }
-
-  // Sisanya diukur bertahap saat browser idle, baru SETELAH slot pertama
-  // tampil, supaya tidak bersaing dengan render awal. Rasio yang sama dengan
-  // estimasi tidak memicu render ulang.
-  useEffect(() => {
-    const pdf = pdfRef.current
-    if (!ready || !pdf) return
-    let cancelled = false
-    ;(async () => {
-      for (let from = 1; from <= numPages; from += MEASURE_BATCH) {
-        await idle()
-        if (cancelled) return
-        const batch = []
-        for (let page = from; page < Math.min(numPages + 1, from + MEASURE_BATCH); page++) batch.push(page)
-        await measureRatios(pdf, batch, ratioCache.current)
-        if (cancelled) return
-        flushRatios()
-      }
-    })()
-    return () => { cancelled = true }
-  }, [ready, numPages, flushRatios])
 
   async function submitNote(event) {
     event.preventDefault()

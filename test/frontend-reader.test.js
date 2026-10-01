@@ -17,6 +17,7 @@ const available = chrome && fs.existsSync(path.join(root, 'node_modules/vite/dis
 const LONG_SIZES = Array.from({ length: 12 }, (_, i) => (i + 1) % 4 === 0 ? [800, 600] : [600, 800]);
 // 60 pages, every 5th landscape: restoring page 30 (landscape) makes the initial
 // estimate wrong for most pages above it, so background measurement must not jump.
+const SHORT_END_SIZES = [...Array(5).fill([600, 800]), [800, 150]];
 const BIG_SIZES = Array(300).fill([600, 800]);
 const SIXTY_SIZES = Array.from({ length: 60 }, (_, i) => (i + 1) % 5 === 0 ? [800, 600] : [600, 800]);
 
@@ -61,7 +62,7 @@ window.fetch = async (url, opts = {}) => {
   const p = new URL(url, location.origin).pathname;
   window.calls.push({ path: p, search: new URL(url, location.origin).search, method: opts.method || 'GET', body: opts.body && JSON.parse(opts.body) });
   let data;
-  if (p.startsWith('/api/contents/')) { await new Promise(resolve => setTimeout(resolve, 100)); data = { id: Number(p.split('/').pop()), title: 'Fixture PDF ' + p.split('/').pop(), content_type: 'pdf', file_url: ({ 3: '/fixture-long.pdf', 4: '/fixture-60.pdf', 5: '/fixture-300.pdf' })[p.split('/').pop()] || '/fixture.pdf' }; }
+  if (p.startsWith('/api/contents/')) { await new Promise(resolve => setTimeout(resolve, 100)); data = { id: Number(p.split('/').pop()), title: 'Fixture PDF ' + p.split('/').pop(), content_type: 'pdf', file_url: ({ 3: '/fixture-long.pdf', 4: '/fixture-60.pdf', 5: '/fixture-300.pdf', 6: '/fixture-short-end.pdf' })[p.split('/').pop()] || '/fixture.pdf' }; }
   else if (p.startsWith('/api/activity/reading-progress/')) data = { last_page_read: window.saved };
   else if (p === '/api/activity/reading-progress') {
     if (window.holdProgress) await new Promise(resolve => { window.pending.progress = resolve; });
@@ -104,6 +105,7 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
       if (req.url.startsWith('/reader-test')) { res.setHeader('Content-Type', 'text/html'); return res.end('<html><body><div id="root"></div><script type="module" src="/test-entry.js"></script></body></html>'); }
       if (req.url === '/fixture.pdf') { res.setHeader('Content-Type', 'application/pdf'); return setTimeout(() => res.end(pdf()), 100); }
       if (req.url === '/fixture-long.pdf') { res.setHeader('Content-Type', 'application/pdf'); return res.end(pdf(LONG_SIZES)); }
+      if (req.url === '/fixture-short-end.pdf') { res.setHeader('Content-Type', 'application/pdf'); return res.end(pdf(SHORT_END_SIZES)); }
       if (req.url === '/fixture-300.pdf') { res.setHeader('Content-Type', 'application/pdf'); return res.end(pdf(BIG_SIZES)); }
       if (req.url === '/fixture-60.pdf') { res.setHeader('Content-Type', 'application/pdf'); return res.end(pdf(SIXTY_SIZES)); }
       next();
@@ -196,18 +198,17 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
 
   await t.test('page slots keep identical geometry when canvases are evicted', async () => {
     await open('?content=4', 60);
-    await until(() => evaluate(`new Set(window.getPageMsgs.map(m => m.page)).size === 60`), 'all pages measured');
-    await new Promise(r => setTimeout(r, 300));
-    const before = await heights();
-    assert.ok(before[4] < before[0], 'landscape placeholder must follow its own aspect ratio');
-    // Visiting page 20 then 40 pushes the resident set past its limit, so the
-    // farthest pages (starting with page 1) are evicted.
     await evaluate(`${slot(20)}.scrollIntoView()`);
     await until(() => header('/Hal\\. 20\\/60/'), 'active page 20');
+    await until(() => evaluate(`!!${slot(26)}.querySelector('.react-pdf__Page')`), 'ahead window around page 20');
+    await new Promise(r => setTimeout(r, 300));
+    const before = (await heights()).slice(0, 30);
+    assert.ok(before[4] < before[0], 'landscape placeholder must follow its own aspect ratio');
+    // Page 40 pushes the resident set past its limit: page 1 and the other far pages are evicted.
     await evaluate(`${slot(40)}.scrollIntoView()`);
     await until(() => evaluate(`Boolean(${slot(40)}.querySelector('canvas')) && !${slot(1)}.querySelector('canvas')`), 'page 1 evicted, page 40 mounted');
     await new Promise(r => setTimeout(r, 300));
-    assert.deepEqual(await heights(), before);
+    assert.deepEqual((await heights()).slice(0, 30), before, 'evicted and untouched slots keep their height');
     assert.ok(Math.abs(await slotTop(40) - 24) <= 1, 'page 40 must stay where it was scrolled to');
   });
 
@@ -267,8 +268,8 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
     await evaluate(`${slot(n)}.scrollIntoView()`);
     await until(() => header(`/Hal\\. ${n}\\/${total}/`), `active page ${n}`);
   };
-  const MAX_RESIDENT = 16;
-  const AHEAD = 10;
+  const MAX_RESIDENT = 12;
+  const AHEAD = 6;
 
   await t.test('continuous forward scrolling never replaces the Reader with the route loading fallback', async () => {
     await open('?content=5', 300);
@@ -284,6 +285,8 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
   });
 
   const isReady = n => evaluate(`${slot(n)}.hasAttribute('data-ready')`);
+  // Distinct pages whose metadata was requested from the pdf.js worker.
+  const measured = () => evaluate(`[...new Set(window.getPageMsgs.map(m => m.page))].sort((a, b) => a - b)`);
 
   await t.test('a mounted page is not ready until its canvas render succeeded', async () => {
     await open('?content=5', 300);
@@ -311,9 +314,9 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
 
   await t.test('nearest forward pages are scheduled immediately, not after idle batches', async () => {
     await open('?content=5', 300);
-    // Immediate tier = active + 6, mounted within a frame or two of the first render.
-    await until(() => hasAll(range(1, 7)), 'immediate forward tier mounted', 1500);
-    await until(async () => (await Promise.all(range(1, 7).map(isReady))).every(Boolean), 'immediate tier ready', 4000);
+    // Immediate tier = active + 4, mounted within a frame or two of the first render.
+    await until(() => hasAll(range(1, 5)), 'immediate forward tier mounted', 1500);
+    await until(async () => (await Promise.all(range(1, 5).map(isReady))).every(Boolean), 'immediate tier ready', 4000);
   });
 
   await t.test('sequential reading always reaches pages that are already rendered', async () => {
@@ -343,12 +346,12 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
   await t.test('pages ahead are rendered before they reach the viewport', async () => {
     await open('?content=4', 60);
     await goTo(5);
-    await until(() => hasAll(range(3, 15)), 'ahead window around page 5');
-    await until(() => painted(14), 'page 14 painted while page 5 is active');
-    await evaluate(`window.kept = ${slot(14)}.querySelector('canvas'); true`);
-    for (const n of [7, 9, 11, 14]) await goTo(n);
-    assert.equal(await evaluate(`${slot(14)}.querySelector('canvas') === window.kept`), true, 'page 14 must not be remounted when reached');
-    assert.ok(await painted(14));
+    await until(() => hasAll(range(3, 11)), 'ahead window around page 5');
+    await until(() => painted(11), 'page 11 painted while page 5 is active');
+    await evaluate(`window.kept = ${slot(11)}.querySelector('canvas'); true`);
+    for (const n of [7, 9, 11]) await goTo(n);
+    assert.equal(await evaluate(`${slot(11)}.querySelector('canvas') === window.kept`), true, 'page 11 must not be remounted when reached');
+    assert.ok(await painted(11));
   });
 
   await t.test('recently visited pages stay mounted across small moves; count stays bounded', async () => {
@@ -371,7 +374,7 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
     for (const n of [5, 10, 15]) await goTo(n);
     await goTo(50);
     await until(() => hasAll(range(48, 52)), 'destination neighbourhood mounted');
-    await until(() => hasAll(range(48, 60)), 'pages ahead of the destination pre-rendered');
+    await until(() => hasAll(range(48, 56)), 'pages ahead of the destination pre-rendered');
     const m = await mounted();
     assert.ok(m.length <= MAX_RESIDENT, `mounted ${m.length}: ${m}`);
     assert.ok(await canvasCount() <= MAX_RESIDENT);
@@ -379,51 +382,76 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
     assert.ok(!old.includes(1), `farthest page must be evicted first: ${m}`);
     assert.ok(old.every(p => p >= Math.max(...old) - old.length + 1), `survivors must be the old pages closest to page 50: ${m}`);
     await goTo(8);
-    await until(() => hasAll(range(6, 18)), 'old region re-rendered after jumping back');
+    await until(() => hasAll(range(6, 14)), 'old region re-rendered after jumping back');
     assert.ok((await mounted()).length <= MAX_RESIDENT);
   });
 
   await t.test('300-page PDF stays bounded while reading forward and after a far jump', async () => {
     await open('?content=5', 300);
+    await new Promise(r => setTimeout(r, 1500));
+    const idleMeasured = await measured();
+    assert.ok(idleMeasured.length <= MAX_RESIDENT, `opening must not scan all pages; measured ${idleMeasured.length}: ${idleMeasured}`);
     for (let n = 2; n <= 30; n += 2) {
       await evaluate(`${slot(n)}.scrollIntoView()`);
       await new Promise(r => setTimeout(r, 40));
     }
     await until(() => header('/Hal\\. 30\\/300/'), 'reached page 30');
-    await until(() => hasAll(range(28, 40)), 'ahead window around page 30');
+    await until(() => hasAll(range(28, 36)), 'ahead window around page 30');
     assert.ok((await mounted()).length <= MAX_RESIDENT);
     assert.ok(await canvasCount() <= MAX_RESIDENT);
     await goTo(250, 300);
     await until(() => hasAll(range(248, 252)), 'destination mounted');
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 1000));
     assert.ok((await mounted()).length <= MAX_RESIDENT);
     assert.ok(await canvasCount() <= MAX_RESIDENT);
+    const pages = await measured();
+    assert.ok(pages.length <= 60, `metadata must stay demand-driven; measured ${pages.length} of 300`);
+    assert.ok(pages.every(p => p <= 40 || (p >= 248 && p <= 260)), `only visited regions are measured: ${pages}`);
+    assert.equal(await evaluate('window.getPageMsgs.length'), pages.length, 'each page requested from the worker at most once');
   });
 
-  await t.test('startup measures only pages near the restored page; metadata cached once per page', async () => {
+  await t.test('startup measures only pages near the restored page; no all-pages metadata scan', async () => {
     await open('?content=4&saved=30', 60);
     const beforeSlots = await evaluate(`window.getPageMsgs.filter(m => m.slots === 0).map(m => m.page)`);
-    // Only restored ±2 is awaited; the ±3 prefetch range may be dispatched in
-    // parallel. Anything beyond that before the first slot = all-pages scan.
+    // Only restored ±2 is awaited before the first slot renders.
     assert.ok(beforeSlots.length <= 7, `getPage calls before first slot: ${beforeSlots.length}`);
     assert.ok(beforeSlots.every(p => p >= 27 && p <= 33), `early pages must surround the restored page: ${beforeSlots}`);
-    // Background measurement finishes the rest without duplicate worker requests.
-    await until(() => evaluate(`new Set(window.getPageMsgs.map(m => m.page)).size === 60`), 'all pages measured');
-    await new Promise(r => setTimeout(r, 300));
-    assert.equal(await evaluate('window.getPageMsgs.length'), 60, 'each page requested from the worker exactly once');
+    // Left idle, measurement stops at the resident window (restored −2 … +AHEAD).
+    await new Promise(r => setTimeout(r, 1500));
+    const pages = await measured();
+    assert.ok(pages.every(p => p >= 28 && p <= 30 + AHEAD), `idle metadata work must stay near the active page: ${pages}`);
+    assert.ok(pages.length <= MAX_RESIDENT);
+    assert.equal(await evaluate('window.getPageMsgs.length'), pages.length, 'each page requested from the worker at most once');
   });
 
-  await t.test('restored landscape page stays put while background metadata corrects estimates', async () => {
-    // Page 30 is landscape, so every portrait page above it starts with a wrong
-    // estimated height and grows when measured.
+  await t.test('restored page and far-jump destination stay put while estimates are corrected on demand', async () => {
+    // Page 30 is landscape, so every other page starts with a wrong (landscape)
+    // estimate and grows when it is measured.
     await open('?content=4&saved=30', 60);
     await until(() => header('/Hal\\. 30\\/60/'), 'restored page 30');
-    await until(() => evaluate(`new Set(window.getPageMsgs.map(m => m.page)).size === 60`), 'all pages measured');
     await new Promise(r => setTimeout(r, 500));
     const h = await heights();
-    assert.ok(h[0] > h[4] && h[4] === h[29], `portrait pages taller than landscape: ${h.slice(0, 5)}`);
+    assert.ok(h[27] > h[29], `measured portrait page 28 must be taller than landscape page 30: ${h.slice(27, 30)}`);
     assert.ok(Math.abs(await slotTop(30) - 24) <= 1, `page 30 drifted to ${await slotTop(30)}`);
-    assert.ok(await header('/Hal\\. 30\\/60/'));
+    // Jump into an unmeasured region: pages above the destination are corrected
+    // as they are measured, and the anchor keeps the destination in place.
+    await evaluate(`${slot(12)}.scrollIntoView()`);
+    await until(() => header('/Hal\\. 12\\/60/'), 'active page 12');
+    await until(async () => (await measured()).includes(10), 'destination neighbourhood measured');
+    await new Promise(r => setTimeout(r, 500));
+    assert.ok(Math.abs(await slotTop(12) - 24) <= 1, `page 12 drifted to ${await slotTop(12)}`);
+    assert.ok(await header('/Hal\\. 12\\/60/'));
+  });
+
+  await t.test('reaching the bottom activates a short final page and saves 100% progress', async () => {
+    await open('?content=6', 6);
+    await evaluate(`const m = document.querySelector('main'); m.scrollTop = m.scrollHeight; true`);
+    await until(() => header('/Hal\\. 6\\/6/'), 'final page active at the bottom');
+    assert.ok(await header('/100%/'));
+    await until(() => evaluate(`window.calls.some(c => c.path === '/api/activity/reading-progress' && c.body.last_page === 6)`), 'progress saved for final page');
+    // Leaving the bottom hands tracking back to the centre line.
+    await evaluate(`document.querySelector('main').scrollTop -= 400; true`);
+    await until(() => header('/Hal\\. 5\\/6/'), 'page 5 active again after scrolling up');
   });
 
   await t.test('sidebar toggle rescales canvases without re-rendering or hiding them', async () => {
