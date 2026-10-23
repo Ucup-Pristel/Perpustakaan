@@ -16,6 +16,10 @@ COPY --chown=node:node backend ./backend
 COPY --chown=node:node database/migrations ./database/migrations
 COPY --chown=node:node knexfile.js ./knexfile.js
 COPY --chown=node:node package.json ./package.json
+
+# Siapkan mount point upload sementara
+RUN install -d -o node -g node -m 0700 /app/tmp
+
 USER node
 EXPOSE 3000
 CMD ["node", "backend/server.js"]
