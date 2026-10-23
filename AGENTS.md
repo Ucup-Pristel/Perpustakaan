@@ -204,3 +204,33 @@ run appropriate validation,
 remove temporary debugging artifacts,
 check for obvious regressions,
 and accurately report anything that remains unverified.
+
+## Infrastructure Migration — In Progress
+
+The application is transitioning from SQLite/PM2
+to PostgreSQL/Docker Compose.
+
+Current production:
+- Legacy VPS
+- SQLite
+- Nginx + PM2
+
+New staging:
+- Akamai Linode
+- Docker Compose
+- PostgreSQL 17
+- Isolated staging database
+
+Migration rules:
+- Preserve SQLite compatibility until cutover.
+- Use the feature branch for migration work.
+- Never run staging tests against production data.
+- Do not modify production DNS or deployment targets
+  without explicit authorization.
+- Verify database compatibility before migrating data.
+- Preserve backup and rollback capabilities.
+
+This section explicitly authorizes Docker and PostgreSQL
+development for the ongoing migration project and overrides
+conflicting legacy architecture restrictions only within
+this migration scope.
