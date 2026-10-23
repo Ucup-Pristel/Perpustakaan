@@ -22,16 +22,17 @@ const TABLE = 'contents';
 const DEAD = 'cover_image_url';
 const KEEP = 'cover_url';
 
-exports.up = async function up(knex) {
-  const info = await knex.raw(`PRAGMA table_info(${TABLE})`);
-  const columns = info.map((c) => c.name);
+// Cek kolom lintas dialek (SQLite: PRAGMA, PostgreSQL: information_schema)
+// lewat Knex, bukan PRAGMA mentah yang hanya jalan di SQLite.
+const hasColumn = (knex, column) => knex.schema.hasColumn(TABLE, column);
 
-  if (!columns.includes(DEAD)) {
+exports.up = async function up(knex) {
+  if (!(await hasColumn(knex, DEAD))) {
     console.log(`  [drop_cover] ${DEAD} sudah tidak ada, dilewati`);
     return;
   }
   // Tanpa kolom tujuan, memindahkan data tidak mungkin — lebih baik gagal.
-  if (!columns.includes(KEEP)) {
+  if (!(await hasColumn(knex, KEEP))) {
     throw new Error(`[drop_cover] ${KEEP} tidak ada; jalankan baseline schema dulu`);
   }
 
@@ -63,14 +64,12 @@ exports.up = async function up(knex) {
   await knex.schema.alterTable(TABLE, (t) => t.dropColumn(DEAD));
   console.log(`  [drop_cover] kolom ${DEAD} dibuang`);
 
-  const after = (await knex.raw(`PRAGMA table_info(${TABLE})`)).map((c) => c.name);
-  if (after.includes(DEAD)) throw new Error(`[drop_cover] ${DEAD} masih ada setelah drop`);
-  if (!after.includes(KEEP)) throw new Error(`[drop_cover] ${KEEP} hilang — rollback`);
+  if (await hasColumn(knex, DEAD)) throw new Error(`[drop_cover] ${DEAD} masih ada setelah drop`);
+  if (!(await hasColumn(knex, KEEP))) throw new Error(`[drop_cover] ${KEEP} hilang — rollback`);
 };
 
 exports.down = async function down(knex) {
-  const columns = (await knex.raw(`PRAGMA table_info(${TABLE})`)).map((c) => c.name);
-  if (columns.includes(DEAD)) return;
+  if (await hasColumn(knex, DEAD)) return;
   // Kolomnya dibuat ulang KOSONG. Nilai lama tidak dipulihkan: yang masih
   // terpakai sudah dipindah ke cover_url oleh up(), jadi tidak ada yang hilang.
   await knex.schema.alterTable(TABLE, (t) => t.text(DEAD).nullable());
