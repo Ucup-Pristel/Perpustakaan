@@ -90,10 +90,12 @@ router.get('/search', async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'limit harus bilangan bulat 1-100' });
     }
 
+    // whereILike: PostgreSQL -> ILIKE (LIKE di PG case-sensitive), SQLite -> LIKE
+    // (sudah case-insensitive untuk ASCII). Term tetap dikirim sebagai binding.
     let query = db('contents').where(function () {
-      this.where('title', 'like', `%${term}%`)
-        .orWhere('author', 'like', `%${term}%`)
-        .orWhere('tags', 'like', `%${term}%`);
+      this.whereILike('title', `%${term}%`)
+        .orWhereILike('author', `%${term}%`)
+        .orWhereILike('tags', `%${term}%`);
     });
 
     if (level) {
