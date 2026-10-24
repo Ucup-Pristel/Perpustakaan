@@ -176,7 +176,8 @@ router.post(
           uploaded.push(coverUrl);
         }
 
-        const [id] = await db('contents').insert({
+        // returning('id'): SQLite & PostgreSQL sama-sama mengembalikan [{ id }].
+        const [{ id }] = await db('contents').insert({
           title:        title.trim().slice(0, 255),
           author:       author?.trim().slice(0, 255) || null,
           description:  description?.trim() || null,
@@ -188,7 +189,7 @@ router.post(
           cover_url:    coverUrl,
           created_at:   new Date().toISOString(),
           updated_at:   new Date().toISOString(),
-        });
+        }).returning('id');
 
         res.status(201).json({
           status: 'success',

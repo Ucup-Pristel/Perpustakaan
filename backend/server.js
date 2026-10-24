@@ -160,7 +160,8 @@ app.use('/api/fields', fieldsRouter);
 app.post('/api/fields', auth, isAdmin, async (req, res) => {
   try {
     const { slug, name, description, icon, color, sort_order, is_active } = req.body;
-    const [id] = await db('fields').insert({ slug, name, description, icon, color, sort_order, is_active });
+    // returning('id'): SQLite & PostgreSQL sama-sama mengembalikan [{ id }].
+    const [{ id }] = await db('fields').insert({ slug, name, description, icon, color, sort_order, is_active }).returning('id');
     res.status(201).json({ status: 'success', message: 'Field berhasil ditambahkan', data: { id } });
   } catch (err) {
     console.error(err);
@@ -199,7 +200,7 @@ app.use('/api/subfields', subfieldsRouter);
 app.post('/api/subfields', auth, isAdmin, async (req, res) => {
   try {
     const { field_id, slug, name, description, parent_id, sort_order } = req.body;
-    const [id] = await db('sub_fields').insert({ field_id, slug, name, description, parent_id, sort_order });
+    const [{ id }] = await db('sub_fields').insert({ field_id, slug, name, description, parent_id, sort_order }).returning('id');
     res.status(201).json({ status: 'success', message: 'Sub-bidang berhasil ditambahkan', data: { id } });
   } catch (err) {
     console.error(err);
@@ -238,7 +239,7 @@ app.use('/api/contents', contentsRouter);
 app.post('/api/contents', auth, isAdmin, async (req, res) => {
   try {
     const { sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at } = req.body;
-    const [id] = await db('contents').insert({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags: Array.isArray(tags) ? JSON.stringify(tags) : tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at });
+    const [{ id }] = await db('contents').insert({ sub_field_id, title, author, description, level, content_type, source_url, file_url, cover_url, tags: Array.isArray(tags) ? JSON.stringify(tags) : tags, language, page_count, duration, difficulty_score, is_featured, created_at, updated_at }).returning('id');
     res.status(201).json({ status: 'success', message: 'Konten berhasil ditambahkan', data: { id } });
   } catch (err) {
     console.error(err);
