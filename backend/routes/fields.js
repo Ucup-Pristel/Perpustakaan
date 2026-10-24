@@ -1,6 +1,6 @@
 /**
  * ucup-edu-lib :: Fields Routes
- * GET /api/fields              → List semua bidang (is_active=1, ordered by sort_order)
+ * GET /api/fields              → List semua bidang (is_active=true, ordered by sort_order)
  * GET /api/fields/:slug        → Detail satu bidang + sub-bidang
  */
 
@@ -11,8 +11,10 @@ const db = require('../models/db');
 // GET /api/fields
 router.get('/', async (req, res) => {
   try {
+    // Boolean JS, bukan 1: PostgreSQL menolak `boolean = integer`, sedangkan
+    // SQLite menyimpan boolean sebagai 0/1 dan driver-nya mengikat true sebagai 1.
     const fields = await db('fields')
-      .where('is_active', 1)
+      .where('is_active', true)
       .orderBy('sort_order', 'asc');
     res.json({ status: 'success', data: fields, meta: { total: fields.length } });
   } catch (err) {
@@ -25,7 +27,7 @@ router.get('/', async (req, res) => {
 router.get('/:slug', async (req, res) => {
   try {
     const field = await db('fields')
-      .where({ slug: req.params.slug, is_active: 1 })
+      .where({ slug: req.params.slug, is_active: true })
       .first();
     if (!field) {
       return res.status(404).json({ status: 'error', message: 'Field tidak ditemukan' });
