@@ -62,12 +62,14 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       }
     } else {
       const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
-      const [id] = await db('users').insert({
+      // returning('id'): SQLite & PostgreSQL sama-sama mengembalikan [{ id }].
+      // Tanpa ini, pg mengembalikan objek Result (bukan array ID).
+      const [{ id }] = await db('users').insert({
         email,
         password_hash,
         full_name: fullName,
         role: 'admin',
-      });
+      }).returning('id');
       console.log(`User admin dibuat (id=${id}).`);
     }
 

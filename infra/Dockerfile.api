@@ -15,6 +15,8 @@ COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node backend ./backend
 COPY --chown=node:node database/migrations ./database/migrations
 COPY --chown=node:node knexfile.js ./knexfile.js
+# One-shot ops scripts, dijalankan manual via `compose run --rm` (tidak pernah saat startup).
+COPY --chown=node:node scripts/migrate-staging.js scripts/create-admin.js ./scripts/
 COPY --chown=node:node package.json ./package.json
 
 # Siapkan mount point upload sementara

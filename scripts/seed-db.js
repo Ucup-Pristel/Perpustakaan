@@ -1,119 +1,22 @@
 /**
- * ucup-edu-lib :: Database Seed Script
- * Jalankan dari root project: node scripts/seed-db.js
+ * ucup-edu-lib :: Sample data seed (khusus development lokal)
+ *
+ *   npm run migrate
+ *   npm run seed -- --sample
+ *
+ * - Schema TIDAK dibuat di sini. Sumber kebenaran: database/migrations/.
+ *   Kalau masih ada migration pending, script berhenti.
+ * - Koneksi memakai backend/models/db.js (DB_CLIENT/DB_FILENAME/DB_* dari .env),
+ *   bukan config SQLite hardcoded.
+ * - Opt-in eksplisit: tanpa flag `--sample` tidak ada yang ditulis.
+ * - Menolak NODE_ENV=production dan menolak DB yang katalognya sudah berisi
+ *   (fields/sub_fields/contents/content_paths) — DB produksi selalu berisi.
+ * - Semua insert dalam satu transaksi + `.returning('id')` (SQLite & PostgreSQL
+ *   sama-sama mengembalikan [{ id }]).
  */
 'use strict';
-require('dotenv').config();
 
-const knex = require('knex')({
-  client: 'sqlite3',
-  connection: { filename: process.env.DB_FILENAME || './database/ucup-edu-lib.db' },
-  useNullAsDefault: true,
-});
-
-async function createTables() {
-  if (!await knex.schema.hasTable('fields')) {
-    await knex.schema.createTable('fields', t => {
-      t.increments('id').primary();
-      t.string('slug').unique().notNullable();
-      t.string('name').notNullable();
-      t.text('description');
-      t.string('icon');
-      t.string('color');
-      t.integer('sort_order').defaultTo(0);
-      t.boolean('is_active').defaultTo(true);
-    });
-    console.log('  [create] fields');
-  } else { console.log('  [skip]   fields (sudah ada)'); }
-
-  if (!await knex.schema.hasTable('sub_fields')) {
-    await knex.schema.createTable('sub_fields', t => {
-      t.increments('id').primary();
-      t.integer('field_id').notNullable().references('id').inTable('fields');
-      t.string('slug').unique().notNullable();
-      t.string('name').notNullable();
-      t.text('description');
-      t.integer('parent_id');
-      t.integer('sort_order').defaultTo(0);
-    });
-    console.log('  [create] sub_fields');
-  } else { console.log('  [skip]   sub_fields (sudah ada)'); }
-
-  if (!await knex.schema.hasTable('contents')) {
-    await knex.schema.createTable('contents', t => {
-      t.increments('id').primary();
-      t.integer('sub_field_id').references('id').inTable('sub_fields');
-      t.string('title').notNullable();
-      t.string('author');
-      t.text('description');
-      t.integer('level');
-      t.string('content_type');
-      t.string('source_url');
-      t.string('file_url');
-      t.string('cover_url');
-      t.text('tags');
-      t.string('language').defaultTo('id');
-      t.integer('page_count');
-      t.integer('duration');
-      t.integer('difficulty_score');
-      t.boolean('is_featured').defaultTo(false);
-      t.integer('read_count').defaultTo(0);
-      t.timestamp('created_at').defaultTo(knex.fn.now());
-      t.timestamp('updated_at').defaultTo(knex.fn.now());
-    });
-    console.log('  [create] contents');
-  } else { console.log('  [skip]   contents (sudah ada)'); }
-
-  if (!await knex.schema.hasTable('content_paths')) {
-    await knex.schema.createTable('content_paths', t => {
-      t.increments('id').primary();
-      t.integer('sub_field_id').references('id').inTable('sub_fields');
-      t.integer('from_content_id');
-      t.integer('to_content_id');
-      t.string('path_type');
-    });
-    console.log('  [create] content_paths');
-  } else { console.log('  [skip]   content_paths (sudah ada)'); }
-
-  if (!await knex.schema.hasTable('users')) {
-    await knex.schema.createTable('users', t => {
-      t.increments('id').primary();
-      t.string('email').notNullable().unique();
-      t.string('password_hash').notNullable();
-      t.string('full_name').notNullable();
-      t.string('role').notNullable().defaultTo('member');
-      t.timestamp('created_at').defaultTo(knex.fn.now());
-    });
-    console.log('  [create] users');
-  } else { console.log('  [skip]   users (sudah ada)'); }
-
-  if (!await knex.schema.hasTable('user_progress')) {
-    await knex.schema.createTable('user_progress', t => {
-      t.increments('id').primary();
-      t.integer('user_id').notNullable();
-      t.integer('content_id').notNullable();
-      t.integer('last_page_read').notNullable().defaultTo(0);
-      t.string('status').notNullable().defaultTo('reading');
-      t.timestamp('updated_at').defaultTo(knex.fn.now());
-      t.unique(['user_id', 'content_id']);
-    });
-    console.log('  [create] user_progress');
-  } else { console.log('  [skip]   user_progress (sudah ada)'); }
-
-  if (!await knex.schema.hasTable('notes')) {
-    await knex.schema.createTable('notes', t => {
-      t.increments('id').primary();
-      t.integer('user_id').notNullable();
-      t.integer('content_id').notNullable();
-      t.integer('page_number').notNullable();
-      t.text('note_text').notNullable();
-      t.timestamp('created_at').defaultTo(knex.fn.now());
-    });
-    console.log('  [create] notes');
-  } else { console.log('  [skip]   notes (sudah ada)'); }
-}
-
-// ─── 2. Seed Data ─────────────────────────────────────────────────────────────
+const CATALOG_TABLES = ['fields', 'sub_fields', 'contents', 'content_paths'];
 
 const FIELDS = [
   { slug: 'management',   name: 'Manajemen',          description: 'Jalur karier dalam dunia bisnis dan manajemen organisasi',        icon: '💼', color: '#2563EB', sort_order: 1 },
@@ -144,39 +47,64 @@ const CONTENTS = [
   { sub: 'graphic-design',       title: 'Prinsip Desain Grafis',               author: 'Robin Williams',   level: 1, type: 'ebook', lang: 'id', tags: '["desain","tipografi","visual"]',             desc: 'Empat prinsip dasar desain: kontras, repetisi, alignment, kedekatan' },
 ];
 
-async function seedData() {
-  const { c } = await knex('fields').count('id as c').first();
-  if (c > 0) { console.log('  [skip]   data sudah ada'); return; }
+/** Tolak DB yang katalognya sudah berisi. PostgreSQL mengembalikan COUNT sebagai string. */
+async function assertEmptyCatalog(db) {
+  for (const table of CATALOG_TABLES) {
+    const { c } = await db(table).count('* as c').first();
+    if (Number(c) > 0) {
+      throw new Error(`Tabel ${table} sudah berisi ${c} baris; seed hanya untuk DB kosong. Tidak ada yang ditulis.`);
+    }
+  }
+}
 
+/** Insert sample data. `db` boleh knex atau transaksi. */
+async function seedSample(db) {
   const fieldIds = {};
   for (const f of FIELDS) {
-    const [id] = await knex('fields').insert({ slug: f.slug, name: f.name, description: f.description, icon: f.icon, color: f.color, sort_order: f.sort_order, is_active: 1 });
+    const [{ id }] = await db('fields').insert({ ...f, is_active: true }).returning('id');
     fieldIds[f.slug] = id;
   }
-  console.log(`  [insert] ${FIELDS.length} fields`);
 
   const subIds = {};
-  for (const sf of SUBFIELDS) {
-    const [id] = await knex('sub_fields').insert({ field_id: fieldIds[sf.field_slug], slug: sf.slug, name: sf.name, description: sf.description, sort_order: sf.sort_order });
+  for (const { field_slug, ...sf } of SUBFIELDS) {
+    const [{ id }] = await db('sub_fields').insert({ ...sf, field_id: fieldIds[field_slug] }).returning('id');
     subIds[sf.slug] = id;
   }
-  console.log(`  [insert] ${SUBFIELDS.length} sub_fields`);
 
   for (const c of CONTENTS) {
-    await knex('contents').insert({ sub_field_id: subIds[c.sub], title: c.title, author: c.author, description: c.desc, level: c.level, content_type: c.type, file_url: c.file_url, language: c.lang, tags: c.tags, is_featured: 0, read_count: 0 });
+    await db('contents').insert({
+      sub_field_id: subIds[c.sub], title: c.title, author: c.author, description: c.desc,
+      level: c.level, content_type: c.type, file_url: c.file_url || null, language: c.lang,
+      tags: c.tags, is_featured: false, read_count: 0,
+    });
   }
-  console.log(`  [insert] ${CONTENTS.length} contents`);
+  return { fields: FIELDS.length, sub_fields: SUBFIELDS.length, contents: CONTENTS.length };
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+async function main(argv = process.argv.slice(2), env = process.env) {
+  if (!argv.includes('--sample')) {
+    throw new Error('Sample seeding wajib opt-in: npm run seed -- --sample');
+  }
+  if (env.NODE_ENV === 'production') {
+    throw new Error('Menolak seed: NODE_ENV=production.');
+  }
 
-async function main() {
-  console.log('\n[seed] Membuat tabel...');
-  await createTables();
-  console.log('\n[seed] Menyuntikkan data...');
-  await seedData();
-  console.log('\n[seed] Selesai ✓');
-  await knex.destroy();
+  const db = require('../backend/models/db');
+  try {
+    const [, pending] = await db.migrate.list();
+    if (pending.length) {
+      throw new Error(`${pending.length} migration belum dijalankan; jalankan \`npm run migrate\` dulu.`);
+    }
+    await assertEmptyCatalog(db);
+    const counts = await db.transaction((trx) => seedSample(trx));
+    console.log(`[seed] Selesai: ${counts.fields} fields, ${counts.sub_fields} sub_fields, ${counts.contents} contents`);
+  } finally {
+    await db.destroy();
+  }
 }
 
-main().catch(err => { console.error('[seed] ERROR:', err.message); process.exit(1); });
+if (require.main === module) {
+  main().catch((err) => { console.error('[seed] GAGAL:', err.message); process.exitCode = 1; });
+}
+
+module.exports = { assertEmptyCatalog, seedSample, main };

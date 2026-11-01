@@ -8,6 +8,10 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
+// Semua path dihitung dari root project (bukan process.cwd()), supaya
+// db.migrate.* dari script mana pun menemukan database/migrations yang sama.
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
+
 const knex = require('knex')({
   client: process.env.DB_CLIENT || 'sqlite3',
   connection: (() => {
@@ -27,7 +31,6 @@ const knex = require('knex')({
     // bukan ke database/ di root (DB asli berisi tabel fields/contents/dst).
     // Fix: PROJECT_ROOT selalu dihitung dari __dirname, path relatif di
     // DB_FILENAME di-resolve relatif ke PROJECT_ROOT, bukan cwd.
-    const PROJECT_ROOT = path.resolve(__dirname, '../..');
     const defaultDb = path.resolve(PROJECT_ROOT, 'database/ucup-edu-lib.db');
     return {
       filename: process.env.DB_FILENAME
@@ -58,10 +61,10 @@ const knex = require('knex')({
       },
   migrations: {
     tableName: 'knex_migrations',
-    directory: './database/migrations',
+    directory: path.resolve(PROJECT_ROOT, 'database/migrations'),
   },
   seeds: {
-    directory: './database/seeds',
+    directory: path.resolve(PROJECT_ROOT, 'database/seeds'),
   },
 });
 
