@@ -129,3 +129,62 @@ Only `127.0.0.1:18081` is bound. In Termius add local forwarding `18081` -> remo
 - The PostgreSQL stack is managed only by `/opt/edulib/compose.yaml`.
 - Stop staging only: `$DC stop`. Never run `docker compose down -v` against the PostgreSQL project, and never publish staging on `0.0.0.0`.
 - Sample seed data (`npm run seed -- --sample`) is a local-development tool and is not shipped in the image.
+
+## 8. Import SQLite data into `edulib_staging` (controlled, offline)
+
+`scripts/import-sqlite-to-pg.js` copies every application table from a SQLite snapshot into the freshly migrated, empty `edulib_staging` database. It keeps the original IDs, password hashes, roles, progress, notes and password-reset tokens, and converts integer booleans and timestamps. It does not copy `knex_migrations*` or `sqlite_sequence`. It runs in a throwaway `api` container on the internal `database` network, so PostgreSQL never needs a public port.
+
+It refuses to run when:
+
+- `DB_DATABASE` / `DB_USER` do not end in `_staging` (same guard as step 5);
+- you pass `--apply` without `CONFIRM_IMPORT_DB` set to exactly `DB_DATABASE`;
+- the server reports a different database or user;
+- the source is not a closed, non-WAL snapshot, fails `integrity_check` / `foreign_key_check`, or has a migration list that differs from the repo;
+- the target has pending migrations, a different table set, or **any row in any application table**;
+- any row would not convert cleanly: bad boolean or timestamp, NULL in a NOT NULL column, text too long, duplicate ID, or a legacy column that is not in the target but still holds data.
+
+Without `--apply` it runs as a dry run in a `READ ONLY` transaction. With `--apply`, the whole import is one transaction: lock, insert, `ALTER SEQUENCE ... RESTART`, then verify row counts, IDs, FK integrity and sequence state. Any error rolls back all of it, sequences included. Error messages name the table, ID and column, and never print row values.
+
+**a. Snapshot on the legacy VPS.** This only reads the live DB. Do not copy the `.db` file directly.
+
+```bash
+sqlite3 /home/Perpustakaan/Perpustakaan/database/ucup-edu-lib.db \
+  "VACUUM INTO '/tmp/edulib-snapshot.db'"
+sqlite3 /tmp/edulib-snapshot.db 'PRAGMA journal_mode=DELETE;'   # snapshot only, never the live DB
+sha256sum /tmp/edulib-snapshot.db
+```
+
+**b. Transfer it over SSH.** Never commit it, never put it in `source/`, and delete it when you are done. It holds user emails and password hashes.
+
+```bash
+scp legacy:/tmp/edulib-snapshot.db /opt/edulib/import/edulib-snapshot.db   # on Linode
+ssh legacy rm /tmp/edulib-snapshot.db
+sudo chown root:1000 /opt/edulib/import/edulib-snapshot.db && sudo chmod 0440 /opt/edulib/import/edulib-snapshot.db
+sha256sum /opt/edulib/import/edulib-snapshot.db                                 # must match step a
+```
+
+**c. Target ready.** Finish step 5 (expect `pending: 0`) and leave the API stopped, so nothing writes during the import: `$DC stop api`. If the DB already has data (an admin from step 6, an earlier import), recreate it as described in step 5 "Unrecoverable staging schema" and re-run step 5. There is no merge mode.
+
+**d. Dry run, then apply.** The snapshot is mounted read-only.
+
+```bash
+SNAP="-v /opt/edulib/import/edulib-snapshot.db:/import/source.db:ro"
+$DC run --rm --no-deps $SNAP api node scripts/import-sqlite-to-pg.js --source /import/source.db
+# Read the per-table counts. Only then:
+$DC run --rm --no-deps $SNAP -e CONFIRM_IMPORT_DB=edulib_staging \
+  api node scripts/import-sqlite-to-pg.js --source /import/source.db --apply
+```
+
+Expect `SELESAI: data di-commit ke edulib_staging.` On `GAGAL`, nothing was committed. Fix the cause and repeat d. The target is still empty, so no reset is needed.
+
+**e. Check and clean up.**
+
+```bash
+cd /opt/edulib
+sudo docker compose exec postgres psql -U edulib_admin -d edulib_staging \
+  -c 'SELECT (SELECT count(*) FROM users) users, (SELECT count(*) FROM contents) contents, (SELECT count(*) FROM notes) notes;'
+cd /opt/edulib/source && $DC up -d
+sudo shred -u /opt/edulib/import/edulib-snapshot.db
+```
+
+After this, log in on staging with an existing account to confirm the hashes were preserved. Staging has no Resend, so imported reset tokens cannot be used from email, and they expire on their own.
