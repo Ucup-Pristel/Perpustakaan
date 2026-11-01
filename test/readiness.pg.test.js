@@ -65,6 +65,8 @@ test('assertStagingTarget rejects production and non-pg targets', () => {
   reject({ ...STAGING, DB_USER: 'edulib_admin' }, 'status', /bukan role staging/);
   reject(STAGING, 'latest', /CONFIRM_STAGING_DB=edulib_staging/);
   reject({ ...STAGING, CONFIRM_STAGING_DB: 'edulib' }, 'latest', /CONFIRM_STAGING_DB/);
+  reject(STAGING, 'unlock', /CONFIRM_STAGING_DB=edulib_staging untuk menjalankan unlock/);
+  reject({ ...STAGING, DB_DATABASE: 'edulib', CONFIRM_STAGING_DB: 'edulib' }, 'unlock', /bukan database staging/);
   assert.deepEqual(assertStagingTarget(STAGING, 'status'), { database: 'edulib_staging', user: 'edulib_staging' });
   assert.ok(assertStagingTarget({ ...STAGING, CONFIRM_STAGING_DB: 'edulib_staging' }, 'latest'));
 });
