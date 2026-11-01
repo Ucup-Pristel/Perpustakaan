@@ -143,7 +143,7 @@ It refuses to run when:
 - the target has pending migrations, a different table set, or **any row in any application table**;
 - any row would not convert cleanly: bad boolean or timestamp, NULL in a NOT NULL column, text too long, duplicate ID, or a legacy column that is not in the target but still holds data.
 
-Without `--apply` it runs as a dry run in a `READ ONLY` transaction. With `--apply`, the whole import is one transaction: lock, insert, `ALTER SEQUENCE ... RESTART`, then verify row counts, IDs, FK integrity and sequence state. Any error rolls back all of it, sequences included. Error messages name the table, ID and column, and never print row values.
+Without `--apply` it runs as a dry run in a `READ ONLY` transaction. With `--apply`, the whole import is one transaction: lock, insert, `ALTER SEQUENCE ... RESTART`, then verify row counts, IDs, FK integrity and sequence state, and re-check the source SHA-256 before `COMMIT`. Any error, including a changed source file, rolls back all of it, sequences included. The checksum only catches changes made before that last check, so the snapshot must still be read-only (steps b and d). Error messages name the table, ID and column, and never print row values.
 
 **a. Snapshot on the legacy VPS.** This only reads the live DB. Do not copy the `.db` file directly.
 

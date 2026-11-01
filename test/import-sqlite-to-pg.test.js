@@ -241,6 +241,41 @@ test('failure mid-import rolls back every table and every sequence', { skip: PG_
   }
 });
 
+test('source changed during apply: checksum mismatch rolls back before commit; retry succeeds', { skip: PG_SKIP }, async () => {
+  const source = await makeSource('mutated');
+  const { db, apply } = await freshTarget();
+  // Deterministik, tanpa timing: hash #1 = sebelum baca, hash #2 = di dalam
+  // transaksi setelah insert+verify. Tepat sebelum hash #2 file benar-benar diubah.
+  const realRead = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = function patched(file, ...rest) {
+    if (file === source && ++reads === 2) fs.appendFileSync(source, Buffer.alloc(16, 1));
+    return realRead.call(this, file, ...rest);
+  };
+  try {
+    try {
+      await assert.rejects(run(source, apply, true), (err) => {
+        assert.match(err.message, /file source berubah selama import.*di-rollback/);
+        assert.doesNotMatch(err.message, /\$2b\$|example\.test|password/i, 'error tidak boleh membocorkan data');
+        return true;
+      });
+    } finally {
+      fs.readFileSync = realRead;
+    }
+    assert.equal(reads, 2, 'hash kedua harus dihitung di dalam transaksi apply');
+    assert.ok(Object.values(await counts(db)).every((c) => c === 0));
+    for (const t of TABLES) assert.deepEqual(await seq(db, t), { v: 1, is_called: false }, t);
+
+    // Target tetap kosong -> import ulang dari snapshot utuh langsung lolos.
+    const res = await run(await makeSource('mutated-retry'), apply, true);
+    assert.equal(res.applied, true);
+    assert.equal(Number((await db('users').count('* as c').first()).c), 2);
+    assert.deepEqual(await seq(db, 'users'), { v: 11, is_called: false });
+  } finally {
+    await db.destroy();
+  }
+});
+
 test('invalid source data fails fast before any write', { skip: PG_SKIP }, async () => {
   const cases = [
     ['fk', async (db) => db('notes').insert({ id: 20, user_id: 999, content_id: 7, page_number: 9, note_text: 'yatim' }),

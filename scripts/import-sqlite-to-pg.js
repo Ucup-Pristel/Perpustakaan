@@ -9,7 +9,10 @@
  *
  * Jaminan:
  *   - Source dibuka `mode=ro`; snapshot WAL / ada -wal / -journal ditolak. SHA-256
- *     source dicek sebelum dan sesudah.
+ *     source dicek sebelum dibaca dan sekali lagi DI DALAM transaksi sebelum
+ *     COMMIT (beda -> ROLLBACK). Bukan jaminan mutlak: perubahan setelah cek
+ *     terakhir, atau ubah-lalu-kembalikan, tidak terdeteksi. Snapshot tetap wajib
+ *     read-only (0440, mount :ro).
  *   - Guard staging sama dengan migrate-staging.js (DB/role `*_staging`), plus
  *     CONFIRM_IMPORT_DB untuk --apply, plus identitas server dicek ulang.
  *   - Target harus sudah dimigrasi penuh dan SEMUA tabel aplikasi kosong. Tidak
@@ -339,13 +342,16 @@ async function main(argv = process.argv.slice(2), env = process.env) {
       }
       const plan = await buildPlan(src, target, seqs);
       if (values.apply) await importInto(trx, plan, target.fks);
+      // Cek ulang SEBELUM commit: source berubah -> throw -> ROLLBACK total.
+      if (sha256(file) !== hashBefore) {
+        throw new Error('Menolak: file source berubah selama import; snapshot tidak konsisten, transaksi di-rollback.');
+      }
       return plan.map(({ table, rows, maxId, restart }) => ({ table, rows: rows.length, maxId, restart }));
     });
   } finally {
     await src.destroy();
     if (pg) await pg.destroy();
   }
-  if (sha256(file) !== hashBefore) throw new Error('PERINGATAN: file source berubah selama import; snapshot tidak konsisten.');
 
   for (const r of report) log(`${r.table}: ${r.rows} baris, max id ${r.maxId}, sequence -> ${r.restart}`);
   log(values.apply ? `SELESAI: data di-commit ke ${expected.database}.` : 'DRY-RUN: valid, tidak ada yang ditulis. Ulangi dengan --apply.');
