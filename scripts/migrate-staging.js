@@ -12,7 +12,7 @@
  *   - DB_CLIENT=pg
  *   - DB_DATABASE dan DB_USER berakhiran `_staging` (DB produksi `edulib` dan
  *     role admin `edulib_admin` otomatis ditolak)
- *   - `latest` butuh CONFIRM_STAGING_DB yang sama persis dengan DB_DATABASE
+ *   - `latest`/`unlock` butuh CONFIRM_STAGING_DB yang sama persis dengan DB_DATABASE
  * Setelah konek, current_database()/current_user dicek ulang di server.
  */
 'use strict';
@@ -21,8 +21,8 @@ const STAGING_RE = /^[a-z0-9_]+_staging$/;
 
 /** Lempar Error kalau env tidak menunjuk ke DB staging. Tanpa I/O. */
 function assertStagingTarget(env, command) {
-  if (!['status', 'latest'].includes(command)) {
-    throw new Error('Perintah: node scripts/migrate-staging.js <status|latest>');
+  if (!['status', 'latest', 'unlock'].includes(command)) {
+    throw new Error('Perintah: node scripts/migrate-staging.js <status|latest|unlock>');
   }
   if (env.DB_CLIENT !== 'pg') throw new Error('Menolak: DB_CLIENT harus pg.');
   const { DB_DATABASE: database = '', DB_USER: user = '' } = env;
@@ -32,8 +32,8 @@ function assertStagingTarget(env, command) {
   if (!STAGING_RE.test(user)) {
     throw new Error(`Menolak: DB_USER "${user}" bukan role staging (harus berakhiran _staging).`);
   }
-  if (command === 'latest' && env.CONFIRM_STAGING_DB !== database) {
-    throw new Error(`Menolak: set CONFIRM_STAGING_DB=${database} untuk menjalankan migration.`);
+  if (command !== 'status' && env.CONFIRM_STAGING_DB !== database) {
+    throw new Error(`Menolak: set CONFIRM_STAGING_DB=${database} untuk menjalankan ${command}.`);
   }
   return { database, user };
 }
@@ -49,6 +49,11 @@ async function main(argv = process.argv.slice(2), env = process.env) {
       throw new Error(`Menolak: server melaporkan ${server.user}@${server.database}, bukan ${expected.user}@${expected.database}.`);
     }
     console.log(`[migrate-staging] target: ${server.user}@${server.database}`);
+
+    if (command === 'unlock') {
+      await db.migrate.forceFreeMigrationsLock();
+      console.log('[migrate-staging] lock knex_migrations_lock dilepas');
+    }
 
     if (command === 'latest') {
       // Knex menjalankan seluruh batch dalam SATU transaksi: kalau satu migration

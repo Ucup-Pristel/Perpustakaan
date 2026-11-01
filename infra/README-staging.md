@@ -63,7 +63,7 @@ $DC build api
 
 - `DB_CLIENT=pg`;
 - `DB_DATABASE` and `DB_USER` both end in `_staging` (so `edulib` / `edulib_admin` are refused);
-- for `latest`, `CONFIRM_STAGING_DB` equals `DB_DATABASE` exactly.
+- for `latest` / `unlock`, `CONFIRM_STAGING_DB` equals `DB_DATABASE` exactly.
 
 After connecting it re-checks `current_database()` / `current_user` on the server.
 
@@ -94,7 +94,7 @@ Expected tables: `users`, `fields`, `sub_fields`, `contents`, `content_paths`, `
 
 - Guard refusal (`Menolak: ...`): nothing was connected or written. Fix `staging.env` and retry.
 - Migration error: Knex runs the whole batch in one transaction, and PostgreSQL DDL is transactional, so the batch is rolled back. Run `status` again; the failed files are still `pending`. Fix the code, rebuild (`$DC build api`), re-run step 5.
-- `Migration table is already locked`: only after confirming no other migration container is running (`sudo docker ps`), clear the lock: `$DC run --rm api node node_modules/knex/bin/cli.js migrate:unlock`. Run it only against staging; this compose env always points to `edulib_staging`.
+- `Migration table is already locked`: only after confirming no other migration container is running (`sudo docker ps`), clear the lock with the same guards: `$DC run --rm -e CONFIRM_STAGING_DB=edulib_staging api node scripts/migrate-staging.js unlock`, then re-run step 5.
 - Unrecoverable staging schema: staging is disposable. As `edulib_admin`, `DROP DATABASE edulib_staging;` then `CREATE DATABASE edulib_staging OWNER edulib_staging;` and repeat step 5. **Double-check the database name: never drop `edulib`.**
 
 ## 6. Start API and verify
