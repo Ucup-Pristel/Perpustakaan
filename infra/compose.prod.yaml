@@ -1,0 +1,167 @@
+# Portable production stack: PostgreSQL 17 + API + Nginx (TLS), one project.
+# Self-contained: creates its own networks and DB volume. No external networks.
+# Secrets come only from --env-file OUTSIDE the repo (see infra/prod.env.example).
+#
+#   DC="sudo docker compose --env-file /opt/edulib/prod.env -f infra/compose.prod.yaml"
+#   $DC config --quiet && $DC build api && $DC up -d postgres
+#   $DC run --rm api node scripts/migrate-prod.js status     # never on startup
+#
+# Sizing: 4 vCPU / 8 GB shared VPS. Limits leave ~4 GB for OS, page cache, backups.
+name: edulib-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    # tag@digest: multi-arch index digest, reproducible across VPS rebuilds.
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Superuser: maintenance/backup only, via local socket inside the container.
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:?POSTGRES_ADMIN_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}
+      POSTGRES_DB: postgres
+      # Read by postgres/init-app-role.sh on FIRST init of an empty volume only.
+      APP_DB_NAME: ${APP_DB_NAME:?APP_DB_NAME is required}
+      APP_DB_USER: ${APP_DB_USER:?APP_DB_USER is required}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=2GB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=50
+      - -c
+      - log_min_duration_statement=1000
+    shm_size: 256m
+    cpus: 2
+    mem_limit: 2g
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
+    # No `ports:`. Reachable only on the internal `database` network.
+    networks:
+      - database
+    healthcheck:
+      # -h 127.0.0.1: TCP, so the socket-only temporary init server never reports healthy.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$APP_DB_NAME\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 60s
+    logging: *logging
+
+  api:
+    image: ${EDULIB_API_IMAGE:-edulib-api:local}
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    restart: unless-stopped
+    init: true
+    user: node
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=64m
+      # multer temp before streaming to R2; deleted after upload. Not media storage.
+      - /app/tmp:rw,nosuid,nodev,noexec,size=256m,mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cpus: 1.5
+    mem_limit: 768m
+    environment:
+      NODE_ENV: production
+      # 0.0.0.0 inside the container only; no host port is published.
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DB_CLIENT: pg
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: ${APP_DB_NAME:?APP_DB_NAME is required}
+      DB_USER: ${APP_DB_USER:?APP_DB_USER is required}
+      DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL is required}
+      RESEND_API_KEY: ${RESEND_API_KEY:?RESEND_API_KEY is required}
+      MAIL_FROM: ${MAIL_FROM:?MAIL_FROM is required}
+      PASSWORD_RESET_BASE_URL: ${PASSWORD_RESET_BASE_URL:?PASSWORD_RESET_BASE_URL is required}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:?R2_BUCKET_NAME is required}
+      R2_PUBLIC_URL: ${R2_PUBLIC_URL:?R2_PUBLIC_URL is required}
+    expose:
+      - "3000"
+    networks:
+      - app       # nginx <-> api, also egress to R2/Resend
+      - database  # api <-> postgres, internal (no egress)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+    logging: *logging
+
+  nginx:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cpus: 0.5
+    mem_limit: 128m
+    tmpfs:
+      - /var/cache/nginx:rw,nosuid,size=64m
+      - /var/run:rw,nosuid,size=8m
+      - /tmp:rw,nosuid,size=8m
+    ports:
+      # Only public entry point. Rehearsal overrides bind/ports to loopback.
+      - "${EDULIB_BIND:-0.0.0.0}:${EDULIB_HTTP_PORT:-80}:80"
+      - "${EDULIB_BIND:-0.0.0.0}:${EDULIB_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+      # Must contain fullchain.pem + privkey.pem (real files, not symlinks).
+      - ${TLS_DIR:?TLS_DIR is required}:/etc/nginx/tls:ro
+      # certbot --webroot writes HTTP-01 challenges here.
+      - ${ACME_WEBROOT:?ACME_WEBROOT is required}:/var/www/acme:ro
+    networks:
+      - app
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsSk", "-o", "/dev/null", "https://127.0.0.1/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logging
+
+networks:
+  app: {}
+  database:
+    internal: true
+
+volumes:
+  # Never `down -v` this project: it deletes the database.
+  pgdata: {}

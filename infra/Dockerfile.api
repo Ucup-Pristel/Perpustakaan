@@ -1,23 +1,30 @@
 # Build from repository root: docker build -f infra/Dockerfile.api .
 # Multi-stage so build tools do not ship in the runtime image.
-FROM node:22-bookworm-slim AS deps
+# Base pinned by digest (multi-arch index) so rebuilds on any VPS get the same image.
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS deps
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# sqlite3 prebuilt binary needs glibc 2.38; bookworm has 2.36. Compile it here,
+# then fail the build if any native module cannot load (importer needs sqlite3).
+RUN npm ci --omit=dev \
+    && npm rebuild sqlite3 --build-from-source \
+    && node -e "require('sqlite3'); require('bcrypt'); require('pg')" \
+    && npm cache clean --force
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=deps --chown=node:node /app/node_modules ./node_modules
-COPY --chown=node:node backend ./backend
-COPY --chown=node:node database/migrations ./database/migrations
-COPY --chown=node:node knexfile.js ./knexfile.js
+# Code owned by root (read-only for the `node` runtime user); only /app/tmp is writable.
+COPY --from=deps /app/node_modules ./node_modules
+COPY backend ./backend
+COPY database/migrations ./database/migrations
+COPY knexfile.js ./knexfile.js
 # One-shot ops scripts, dijalankan manual via `compose run --rm` (tidak pernah saat startup).
-COPY --chown=node:node scripts/migrate-staging.js scripts/create-admin.js scripts/import-sqlite-to-pg.js ./scripts/
-COPY --chown=node:node package.json ./package.json
+COPY scripts/migrate-staging.js scripts/migrate-prod.js scripts/create-admin.js scripts/import-sqlite-to-pg.js ./scripts/
+COPY package.json ./package.json
 
 # Siapkan mount point upload sementara
 RUN install -d -o node -g node -m 0700 /app/tmp

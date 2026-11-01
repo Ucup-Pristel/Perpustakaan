@@ -1,5 +1,10 @@
 name: Deploy Backend to VPS
 
+# Migration period (SQLite/PM2 -> PostgreSQL/Docker): push and PR run ONLY the
+# test gate. Deploying to the legacy PM2 VPS is manual: Actions -> "Deploy
+# Backend to VPS" -> Run workflow on `main`, type the confirmation phrase.
+# The `legacy-production` environment should have required reviewers (PM).
+# No automatic deploy to the new Docker VPS exists yet, on purpose.
 on:
   push:
     branches:
@@ -9,15 +14,40 @@ on:
       - 'database/**'
       - 'scripts/**'
       - 'test/**'
+      - 'infra/**'
       - 'knexfile.js'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/deploy-backend.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'database/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'infra/**'
+      - 'knexfile.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: deploy legacy pm2'
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 # Deploy ke satu VPS: jangan pernah dua run bersamaan. Tanpa ini, dua run bisa
 # git pull + npm ci + pm2 restart berbarengan dan saling merusak.
+# Manual deploys get their own group so queued PR/push test runs can never
+# replace a pending deploy (GitHub keeps only the newest pending run per group).
 concurrency:
-  group: deploy-backend
+  group: ${{ github.event_name == 'workflow_dispatch' && 'deploy-backend' || format('test-backend-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -57,6 +87,12 @@ jobs:
 
   deploy:
     needs: test
+    # Never on push/PR. Manual run from main with the exact phrase only.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm == 'deploy legacy pm2'
+    environment: legacy-production
     runs-on: ubuntu-latest
     steps:
       # scripts/deploy.sh yang mengurus urutannya: backup -> pull -> npm ci ->

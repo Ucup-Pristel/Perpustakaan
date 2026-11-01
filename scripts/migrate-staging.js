@@ -38,9 +38,10 @@ function assertStagingTarget(env, command) {
   return { database, user };
 }
 
-async function main(argv = process.argv.slice(2), env = process.env) {
+// assertTarget/tag: dipakai ulang oleh scripts/migrate-prod.js dengan guard produksi.
+async function main(argv = process.argv.slice(2), env = process.env, assertTarget = assertStagingTarget, tag = 'migrate-staging') {
   const command = argv[0];
-  const expected = assertStagingTarget(env, command);
+  const expected = assertTarget(env, command);
 
   const db = require('../backend/models/db');
   try {
@@ -48,22 +49,22 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     if (server.database !== expected.database || server.user !== expected.user) {
       throw new Error(`Menolak: server melaporkan ${server.user}@${server.database}, bukan ${expected.user}@${expected.database}.`);
     }
-    console.log(`[migrate-staging] target: ${server.user}@${server.database}`);
+    console.log(`[${tag}] target: ${server.user}@${server.database}`);
 
     if (command === 'unlock') {
       await db.migrate.forceFreeMigrationsLock();
-      console.log('[migrate-staging] lock knex_migrations_lock dilepas');
+      console.log(`[${tag}] lock knex_migrations_lock dilepas`);
     }
 
     if (command === 'latest') {
       // Knex menjalankan seluruh batch dalam SATU transaksi: kalau satu migration
       // gagal di PostgreSQL, semua DDL batch itu di-rollback.
       const [batch, files] = await db.migrate.latest();
-      console.log(files.length ? `[migrate-staging] batch ${batch}: ${files.join(', ')}` : '[migrate-staging] sudah up to date');
+      console.log(files.length ? `[${tag}] batch ${batch}: ${files.join(', ')}` : `[${tag}] sudah up to date`);
     }
 
     const [done, pending] = await db.migrate.list();
-    console.log(`[migrate-staging] selesai: ${done.length}, pending: ${pending.length}`);
+    console.log(`[${tag}] selesai: ${done.length}, pending: ${pending.length}`);
     for (const m of pending) console.log(`  pending: ${m.file}`);
     if (command === 'latest' && pending.length) throw new Error('Masih ada migration pending.');
   } finally {
