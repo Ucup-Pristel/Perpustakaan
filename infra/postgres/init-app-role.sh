@@ -15,7 +15,8 @@ done
 [ "$APP_DB_USER" != "$POSTGRES_USER" ] || { echo "init-app-role: APP_DB_USER must differ from POSTGRES_ADMIN_USER" >&2; exit 1; }
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
-  -v db="$APP_DB_NAME" -v role="$APP_DB_USER" -v pw="$APP_DB_PASSWORD" <<'SQL'
+  -v db="$APP_DB_NAME" -v role="$APP_DB_USER" <<'SQL'
+\getenv pw APP_DB_PASSWORD
 CREATE ROLE :"role" LOGIN PASSWORD :'pw' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 CREATE DATABASE :"db" OWNER :"role" ENCODING 'UTF8' TEMPLATE template0;
 REVOKE ALL ON DATABASE :"db" FROM PUBLIC;

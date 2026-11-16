@@ -27,7 +27,9 @@ COPY scripts/migrate-staging.js scripts/migrate-prod.js scripts/create-admin.js 
 COPY package.json ./package.json
 
 # Siapkan mount point upload sementara
-RUN install -d -o node -g node -m 0700 /app/tmp
+# A restrictive host umask must not make root-owned source unreadable to node.
+RUN chmod -R a+rX /app \
+    && install -d -o node -g node -m 0700 /app/tmp
 
 USER node
 EXPOSE 3000

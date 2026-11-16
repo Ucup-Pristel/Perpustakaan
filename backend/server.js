@@ -17,6 +17,7 @@ const Fuse = require('fuse.js');
 const queryParser = require('./helpers/queryParser');
 const { toPublicUrl } = require('./helpers/contentUrls');
 const { globalLimiter } = require('./middleware/rateLimiters');
+const { isReady } = require('./helpers/readiness');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -85,6 +86,12 @@ app.use(express.json());
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/ready', async (req, res) => {
+  const ready = await isReady(db);
+  res.set('Cache-Control', 'no-store').status(ready ? 200 : 503)
+    .json({ status: ready ? 'ready' : 'unavailable' });
 });
 
 // GET /api/search?q=...

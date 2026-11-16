@@ -13,6 +13,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
 const knex = require('knex')({
+  acquireConnectionTimeout: 2000,
   client: process.env.DB_CLIENT || 'sqlite3',
   connection: (() => {
     if (process.env.DB_CLIENT === 'pg') {

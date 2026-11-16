@@ -320,3 +320,45 @@ test('target must be fully migrated', { skip: PG_SKIP }, async () => {
     await db.destroy();
   }
 });
+
+test('real PostgreSQL: readiness, baseline indexes and legacy cover migration rollback', { skip: PG_SKIP }, async () => {
+  const { db } = await freshTarget();
+  const { isReady } = require('../backend/helpers/readiness');
+  const migration = require('../database/migrations/20260923000003_drop_cover_image_url');
+  try {
+    assert.equal(await isReady(db), true);
+    await db('knex_migrations_lock').update({ is_locked: 1 });
+    assert.equal(await isReady(db), false);
+    await db('knex_migrations_lock').update({ is_locked: 0 });
+    // Simulate an existing PostgreSQL installation that already recorded the
+    // old baseline but never received its SQLite-only indexes.
+    const repair = '20261116000001_ensure_catalog_indexes.js';
+    for (const name of ['contents_sub_field_level_idx', 'notes_user_idx', 'reading_progress_user_idx']) {
+      await db.raw('DROP INDEX ??', [name]);
+    }
+    await db('knex_migrations').where({ name: repair }).del();
+    assert.equal(await isReady(db), false);
+    const [, applied] = await db.migrate.latest(MIGRATIONS);
+    assert.deepEqual(applied, [repair]);
+    assert.equal(await isReady(db), true);
+    const indexes = await db('pg_indexes').where({ schemaname: 'public' }).pluck('indexname');
+    for (const name of ['contents_sub_field_level_idx', 'notes_user_idx', 'reading_progress_user_idx']) {
+      assert.ok(indexes.includes(name), name);
+    }
+    await db.schema.alterTable('contents', t => t.text('cover_image_url'));
+    await db('contents').insert([
+      { id: 1, title: 'Recover', cover_image_url: 'legacy/a.jpg', cover_url: null },
+      { id: 2, title: 'Conflict', cover_image_url: 'legacy/b.jpg', cover_url: 'current/b.jpg' },
+    ]);
+    await assert.rejects(quiet(() => db.transaction(trx => migration.up(trx))), /berbeda/);
+    assert.equal(await db.schema.hasColumn('contents', 'cover_image_url'), true);
+    assert.equal((await db('contents').where({ id: 1 }).first()).cover_url, null);
+    await db('contents').where({ id: 2 }).update({ cover_url: 'legacy/b.jpg' });
+    await quiet(() => db.transaction(trx => migration.up(trx)));
+    assert.equal(await db.schema.hasColumn('contents', 'cover_image_url'), false);
+    assert.deepEqual(await db('contents').orderBy('id').pluck('cover_url'), ['legacy/a.jpg', 'legacy/b.jpg']);
+    await quiet(() => db.transaction(trx => migration.up(trx))); // Idempotent.
+  } finally {
+    await db.destroy();
+  }
+});

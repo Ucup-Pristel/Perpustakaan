@@ -72,7 +72,13 @@ restore_into() {
 check_file() {
   [ -f "$1" ] || die "backup not found: $1"
   [ -f "$1.sha256" ] || die "checksum missing: $1.sha256"
-  (cd "$(dirname "$1")" && sha256sum --check --status "$(basename "$1").sha256") || die "sha256 mismatch: $1"
+  # Bind verification to the requested archive, never a filename supplied by
+  # the sidecar (which could name a different, valid backup).
+  local expected actual
+  expected="$(awk 'NR == 1 { print $1 } END { if (NR != 1) exit 1 }' "$1.sha256")" || die "invalid checksum file: $1.sha256"
+  [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || die "invalid checksum file: $1.sha256"
+  actual="$(sha256sum -- "$1")"
+  [ "${actual:0:64}" = "${expected,,}" ] || die "sha256 mismatch: $1"
   gzip -t "$1" || die "corrupt gzip: $1"
 }
 
@@ -82,7 +88,12 @@ case "${1:-}" in
     # one-time SQLite import). Default: the app DB. Restore always targets the app DB.
     SRC_DB="${BACKUP_DB:-$DB}"
     [[ "$SRC_DB" =~ ^[a-z_][a-z0-9_]*$ ]] || die "invalid BACKUP_DB: $SRC_DB"
+    [[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || die "KEEP_DAYS must be a non-negative integer"
     mkdir -p "$BACKUP_DIR"
+    # Two cron/manual runs in the same second must not share a .partial file
+    # or replace an archive after both passed the existence check.
+    exec 9> "$BACKUP_DIR/.edulib-$SRC_DB.lock"
+    flock -n 9 || die "backup already running for $SRC_DB"
     NAME="edulib-$SRC_DB-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
     OUT="$BACKUP_DIR/$NAME"
     [ ! -e "$OUT" ] || die "refusing to overwrite $OUT"

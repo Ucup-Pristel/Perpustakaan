@@ -54,6 +54,16 @@ jobs:
   # Gate: kalau test gagal, deploy tidak pernah jalan.
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_PASSWORD: ci-synthetic-only
+        ports:
+          - 127.0.0.1:55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       # Action di-pin ke commit SHA, bukan tag atau @master — tag bisa dipindah
       # ke commit lain dan diam-diam mengeksekusi kode baru di runner kita.
@@ -69,6 +79,19 @@ jobs:
       - name: Install dependencies (dari lockfile)
         run: npm ci
 
+      - name: Install frontend regression dependencies
+        run: npm ci --prefix frontend
+
+      - name: Require browser for Reader regressions
+        run: |
+          CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          echo "CHROME_BIN=$CHROME_BIN" >> "$GITHUB_ENV"
+
+      - name: Frontend lint and production build (no deployment)
+        run: |
+          npm run lint --prefix frontend
+          npm run build --prefix frontend
+
       - name: Cek syntax backend
         run: |
           for f in backend/server.js backend/middleware/*.js backend/models/*.js \
@@ -81,9 +104,18 @@ jobs:
         run: npm test
         env:
           JWT_SECRET: ci-test-secret-not-used-in-production
+          IMPORT_TEST_PG_ADMIN_URL: postgres://postgres:ci-synthetic-only@127.0.0.1:55432/postgres
 
       - name: Audit dependency production
         run: npm audit --omit=dev --audit-level=high
+
+      - name: Build local rehearsal image
+        run: docker build -f infra/Dockerfile.api -t edulib-api:ci-rehearsal .
+
+      - name: Rehearse isolated backup, restore and recovery
+        run: bash test/portable-rehearsal.sh
+        env:
+          EDULIB_API_IMAGE: edulib-api:ci-rehearsal
 
   deploy:
     needs: test

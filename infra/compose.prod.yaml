@@ -55,8 +55,9 @@ services:
     networks:
       - database
     healthcheck:
-      # -h 127.0.0.1: TCP, so the socket-only temporary init server never reports healthy.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$APP_DB_NAME\""]
+      # Authenticate as the app role: pg_isready also succeeds when init failed
+      # and that role/database is absent. TCP excludes the temporary init server.
+      test: ["CMD-SHELL", "PGPASSWORD=\"$$APP_DB_PASSWORD\" psql -X -h 127.0.0.1 -U \"$$APP_DB_USER\" -d \"$$APP_DB_NAME\" -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -115,7 +116,7 @@ services:
         - CMD
         - node
         - -e
-        - "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+        - "require('http').get('http://127.0.0.1:3000/api/ready',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
       interval: 20s
       timeout: 5s
       retries: 4
@@ -150,7 +151,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsSk", "-o", "/dev/null", "https://127.0.0.1/api/health"]
+      test: ["CMD", "curl", "-fsSk", "-o", "/dev/null", "https://127.0.0.1/api/ready"]
       interval: 30s
       timeout: 5s
       retries: 3

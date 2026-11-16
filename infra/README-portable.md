@@ -34,6 +34,10 @@ Three different data paths. Do not mix them up:
 
 A copy of the Docker volume is **not** a backup. Only a `pg_dump` file that passed `verify` counts.
 
+### Liveness and readiness
+
+`/api/health` reports process liveness only. `/api/ready` returns 200 only when the database is reachable, its recorded migrations exactly match this release, and the migration lock is clear; otherwise it returns 503 without database details. Probes never create metadata or run migrations. Compose health checks use readiness, so a fresh API remains unhealthy until the explicit migration or restore finishes. This does not replace schema/integrity checks or exercise external R2/email services.
+
 ## 1. Fresh VPS setup
 
 Ubuntu 24.04 LTS, 4 vCPU / 8 GB. Compose limits: postgres 2 CPU / 2 GB, api 1.5 CPU / 768 MB, nginx 0.5 CPU / 128 MB. That leaves page cache and room for backups.
@@ -61,7 +65,11 @@ sudo install -d -m 0700 /opt/edulib/tls /var/backups/edulib /opt/edulib/import
 cd /opt/edulib
 sudo git clone https://github.com/Ucup-Pristel/Perpustakaan.git source
 sudo git -C source checkout <approved-commit-sha>        # detached, exact SHA
-sudo git -C source verify-commit HEAD 2>/dev/null || true # if commits are signed
+# PostgreSQL runs this bind-mounted public script as its non-root OS user.
+# Some restricted shells clone with umask 077; Git does not record read bits.
+sudo chmod 0755 source/infra/postgres/init-app-role.sh
+# If your release policy requires signed commits, verification must succeed:
+# sudo git -C source verify-commit HEAD
 
 sudo install -m 600 -o root -g root source/infra/prod.env.example /opt/edulib/prod.env
 sudo nano /opt/edulib/prod.env
@@ -155,15 +163,17 @@ The importer writes only to `*_staging` databases. Import into a temporary `edul
 
    ```bash
    read -rs IMP_PW && export IMP_PW
-   DCI="sudo --preserve-env=IMP_PW docker compose --env-file /opt/edulib/prod.env -f infra/compose.prod.yaml"
-   $DCI exec -T -e IMP_PW postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -v pw="$IMP_PW"' <<'SQL'
+   export DB_PASSWORD="$IMP_PW"
+   DCI="sudo --preserve-env=IMP_PW,DB_PASSWORD docker compose --env-file /opt/edulib/prod.env -f infra/compose.prod.yaml"
+   $DCI exec -T -e IMP_PW postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres' <<'SQL'
+   \getenv pw IMP_PW
    CREATE ROLE edulib_import_staging LOGIN PASSWORD :'pw';
    CREATE DATABASE edulib_import_staging OWNER edulib_import_staging;
    SQL
-   IMP="-e DB_DATABASE=edulib_import_staging -e DB_USER=edulib_import_staging -e DB_PASSWORD=$IMP_PW"  # stays in this shell only
+   IMP="-e DB_DATABASE=edulib_import_staging -e DB_USER=edulib_import_staging -e DB_PASSWORD"
    ```
 
-   Do not reuse the `-e DB_PASSWORD=...` form on shared hosts: it shows the value in `ps`. On a single-admin VPS it is acceptable for this one-time step. `unset IMP_PW IMP` afterwards.
+   Pass secret variable **names**, never their values, on the command line. `psql` reads the password with `\getenv`; Docker inherits `DB_PASSWORD` from the environment. `unset IMP_PW DB_PASSWORD IMP DCI` afterwards. Docker administrators can still inspect container environment variables; restrict daemon access.
 
 4. Migrate the import DB, dry-run, then apply:
 
@@ -197,6 +207,13 @@ The importer writes only to `*_staging` databases. Import into a temporary `edul
 
 7. Continue with section 6 steps 4–12 (start, validate, DNS). The legacy SQLite file stays untouched on the legacy VPS as the rollback source.
 
+**Initial-cutover rollback differs from a PostgreSQL relocation.** Before the new
+API accepts writes, the frozen SQLite copy remains a valid rollback source.
+After PostgreSQL accepts writes, SQLite is stale: a PostgreSQL dump cannot be
+restored into it. No reverse importer is provided. Freeze writes and obtain an
+explicit reconciliation/data-loss decision; never blindly restart the old SQLite
+API or apply the PostgreSQL-to-PostgreSQL reverse-restore instructions to it.
+
 ## 5. Normal PostgreSQL backup
 
 `scripts/pg-portable.sh` runs `pg_dump` inside the `postgres` container over its local socket. No published port and no password in argv or logs. It writes `/var/backups/edulib/edulib-<db>-<YYYYmmddTHHMMSSZ>.sql.gz` plus `.sha256`, mode `600`.
@@ -204,6 +221,7 @@ The importer writes only to `*_staging` databases. Import into a temporary `edul
 - Consistent: one MVCC snapshot, so the API can stay running.
 - Complete: schema, data, primary/foreign keys, indexes, `setval()` for every sequence, `knex_migrations`.
 - Fails on any error (`set -Eeuo pipefail`). A failed dump stays as `.partial` and is deleted. It never overwrites an existing file.
+- Concurrent backups of the same database/directory are refused with a non-blocking `flock` (Ubuntu `util-linux`); a second job cannot overwrite a partial archive.
 - Retention: after a successful backup, files older than `KEEP_DAYS` (default 14) matching the exact name pattern are deleted.
 
 ```bash
@@ -256,7 +274,7 @@ Old = current Docker VPS (`OLD`). New = fresh VPS (`NEW`).
 
 `.github/workflows/deploy-backend.yml` (changed in this branch):
 
-- `push` to `main`, and `pull_request` to `main`, run **only** the `test` job: syntax check, `npm test`, `npm audit --omit=dev --audit-level=high`.
+- `push` to `main`, and `pull_request` to `main`, run **only** the `test` job: syntax checks, frontend lint/build/browser regressions, `npm test` with an ephemeral PostgreSQL service (including real import/rollback tests), `npm audit --omit=dev --audit-level=high`, and the isolated Docker recovery rehearsal. Missing browser dependencies fail CI instead of silently skipping those tests.
 - The legacy PM2 deploy job runs only through **Actions, then Run workflow** on `main` with the input `deploy legacy pm2`. It uses the `legacy-production` environment.
 - PM setup in GitHub settings: create environment `legacy-production`, add the PM as **required reviewer**, restrict it to branch `main`, and move `VPS_HOST`, `VPS_USERNAME`, `VPS_PASSWORD` from repository secrets into that environment. Until then, the typed phrase and the `main` branch check are the only guards.
 - Nothing deploys to the Docker VPS automatically. A Docker release is a PM-approved **commit SHA** that has a green `test` run and a passing `test/portable-rehearsal.sh`. The operator applies it by hand:
@@ -281,7 +299,7 @@ docker build -f infra/Dockerfile.api -t edulib-api:t11-rehearsal .
 EDULIB_API_IMAGE=edulib-api:t11-rehearsal test/portable-rehearsal.sh
 ```
 
-It creates and removes only the projects `edulib-t11-src`, `edulib-t11-dst` and `edulib-t11-imp`, plus a temp dir under `/tmp/opencode`. It binds only to `127.0.0.1:18480` and `127.0.0.1:18443`. It refuses to start if those projects already exist. Only one PostgreSQL runs at a time (about 1.5 GB RAM peak). It covers fresh init, no-migration-on-startup, guarded migrations, synthetic data, backup, verify, refused restores (no confirmation, wrong project, API running, tampered file, non-empty target), identical integrity reports, API reads and writes through TLS nginx, sequence continuation, network isolation, container recreation, proxy limits, secret hygiene, and the one-time SQLite import path.
+It creates and removes only the projects `edulib-t11-src`, `edulib-t11-dst` and `edulib-t11-imp`, plus a temp dir under `/tmp/opencode`. It binds only to `127.0.0.1:18480` and `127.0.0.1:18443`. It refuses to start if those projects already exist. Only one PostgreSQL runs at a time (about 1.5 GB RAM peak). It covers fresh init, no-migration-on-startup, guarded migrations, synthetic data, backup, verify, refused restores (no confirmation, wrong project, API running, tampered file, non-empty target), identical integrity reports, API reads and writes through TLS nginx, sequence continuation, network isolation, container recreation, database outage/recovery readiness, local certificate renewal with hostname/trust verification, proxy limits, secret hygiene, and the one-time SQLite import path. Real certificate authority issuance and production renewal scheduling remain separate operational checks.
 
 ## 9. Known limits
 

@@ -110,8 +110,14 @@ dc "$SRC" up -d --wait postgres > /dev/null || fail "src postgres"
 ok "src postgres healthy (fresh volume, init-app-role ran)"
 [ "$(q "$SRC" 'SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user;')" = 'f|f|f' ] || fail "app role privileges"
 ok "app role is not superuser/createdb/createrole"
-dc "$SRC" up -d --wait --no-build api > /dev/null || fail "src api"
-ok "src api healthy on empty DB"
+dc "$SRC" up -d --no-build api > /dev/null || fail "src api"
+for i in $(seq 1 30); do
+  dc "$SRC" exec -T api node -e "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))" 2>/dev/null && break
+  [ "$i" -lt 30 ] || fail "src liveness"
+  sleep 1
+done
+dc "$SRC" exec -T api node -e "require('http').get('http://127.0.0.1:3000/api/ready',r=>process.exit(r.statusCode===503?0:1)).on('error',()=>process.exit(1))" || fail "empty DB incorrectly ready"
+ok "src api live but NOT ready on empty DB"
 [ "$(q "$SRC" "SELECT to_regclass('public.knex_migrations') IS NULL;")" = t ] || fail "api startup created knex_migrations"
 ok "api startup executed no migration (knex_migrations absent)"
 dc "$SRC" stop api > /dev/null
@@ -127,9 +133,9 @@ dc "$SRC" run --rm --no-deps -e CONFIRM_PROD_DB=edulib api node scripts/migrate-
 grep 'pending: 0' "$WORK/out" > /dev/null || fail "migration incomplete"
 ok "migrate-prod latest applied"
 dc "$SRC" run --rm --no-deps api node scripts/migrate-prod.js status > "$WORK/out" || fail "migrate status"
-grep 'selesai: 4, pending: 0' "$WORK/out" > /dev/null || fail "migrate status: $(cat "$WORK/out")"
+grep 'selesai: 5, pending: 0' "$WORK/out" > /dev/null || fail "migrate status: $(cat "$WORK/out")"
 [ "$(q "$SRC" "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner = current_user;")" = 11 ] || fail "table ownership"
-ok "schema: 4 migrations, 11 tables owned by app role"
+ok "schema: 5 migrations, 11 tables owned by app role"
 
 # ---------------- 4. Synthetic data on source (gaps: sequence ahead of max id) ----------------
 dc "$SRC" run --rm --no-deps -e ADMIN_EMAIL=admin@example.test -e ADMIN_NAME='Admin Sintetis' -e ADMIN_PASSWORD \
@@ -165,6 +171,11 @@ BACKUP="$(pgp "$SRC" backup 2> "$WORK/backup.log")" || { cat "$WORK/backup.log" 
 [[ "$(basename "$BACKUP")" =~ ^edulib-edulib-[0-9]{8}T[0-9]{6}Z\.sql\.gz$ ]] || fail "backup name: $BACKUP"
 [ -f "$BACKUP.sha256" ] || fail "no checksum file"
 ok "backup created: $(basename "$BACKUP") + .sha256"
+(
+  flock -n 9 || fail "could not acquire backup test lock"
+  refused 'backup already running' pgp "$SRC" backup
+) 9> "$WORK/backups/.edulib-edulib.lock"
+ok "concurrent backup refused without modifying the completed archive"
 grep -E 'POSTGRES_ADMIN_PASSWORD|APP_DB_PASSWORD|JWT' "$WORK/backup.log" > /dev/null && fail "backup log leaks secret names/values"
 pgp "$SRC" verify "$BACKUP" 2> "$WORK/verify.log" || { cat "$WORK/verify.log" >&2; fail "verify"; }
 [ "$(q "$SRC" "SELECT count(*) FROM pg_database WHERE datname LIKE 'edulib_verify_%';")" = 0 ] || fail "verify left scratch DB"
@@ -174,7 +185,8 @@ grep -c '^table|' "$WORK/src.report" | grep -x 11 > /dev/null || fail "src repor
 dc "$SRC" stop > /dev/null   # old VPS kept intact (volume preserved) as rollback option
 
 # ---------------- 6. Destination: guarded restore ----------------
-dc "$DST" up -d --wait --no-build postgres api > /dev/null || fail "dst postgres+api"
+dc "$DST" up -d --wait --no-build postgres > /dev/null || fail "dst postgres"
+dc "$DST" up -d --no-build api > /dev/null || fail "dst api"
 refused 'set CONFIRM_RESTORE=edulib-t11-dst/edulib' pgp "$DST" restore "$BACKUP"
 ok "restore refused without CONFIRM_RESTORE"
 restore_as() { local c="$1"; shift; CONFIRM_RESTORE="$c" pgp "$DST" restore "$@"; }
@@ -187,6 +199,11 @@ cp "$BACKUP" "$WORK/tampered.sql.gz"; printf 'x' >> "$WORK/tampered.sql.gz"
 printf '%s  tampered.sql.gz\n' "$(cut -d' ' -f1 "$BACKUP.sha256")" > "$WORK/tampered.sql.gz.sha256"
 refused 'sha256 mismatch' restore_as "$DST/edulib" "$WORK/tampered.sql.gz"
 ok "restore refused for tampered backup (checksum)"
+# A valid sidecar for a DIFFERENT file must not validate this archive.
+cp "$BACKUP.sha256" "$WORK/tampered.sql.gz.sha256"
+cp "$BACKUP" "$WORK/$(basename "$BACKUP")"
+refused 'sha256 mismatch' restore_as "$DST/edulib" "$WORK/tampered.sql.gz"
+ok "checksum is bound to requested backup, not the filename in its sidecar"
 [ "$(q "$DST" "SELECT count(*) FROM pg_tables WHERE schemaname = 'public';")" = 0 ] || fail "refusals wrote to dst"
 restore_as "$DST/edulib" "$BACKUP" 2> "$WORK/restore.log" || { cat "$WORK/restore.log" >&2; fail "restore"; }
 ok "restore into empty dst succeeded (single transaction)"
@@ -214,6 +231,36 @@ ok "dst api + nginx healthy on restored DB"
 [ "$(code "https://127.0.0.1:$HTTPS_PORT/")" = 404 ] || fail "non-api path"
 api /api/health -D - -o /dev/null | grep -i '^strict-transport-security:' > /dev/null || fail "HSTS"
 ok "TLS health 200, HTTP->HTTPS 301, ACME webroot served, non-API 404, HSTS"
+
+# Exercise the renewal hook with a new local certificate, never Let's Encrypt
+# or real DNS. Trust this exact synthetic certificate and verify its hostname.
+mkdir "$WORK/renewed"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=api.edulib.test' \
+  -addext 'subjectAltName=DNS:api.edulib.test' \
+  -keyout "$WORK/renewed/privkey.pem" -out "$WORK/renewed/fullchain.pem" 2>/dev/null
+EDULIB_ENV_FILE="$(envf "$DST")" EDULIB_SOURCE="$ROOT" COMPOSE_PROJECT_NAME="$DST" \
+  RENEWED_LINEAGE="$WORK/renewed" sh "$ROOT/infra/certbot-deploy-hook.sh" || fail "local TLS renewal hook"
+for i in $(seq 1 10); do
+  curl --noproxy api.edulib.test --cacert "$WORK/renewed/fullchain.pem" \
+    --resolve "api.edulib.test:$HTTPS_PORT:127.0.0.1" -fsS --max-time 5 \
+    "https://api.edulib.test:$HTTPS_PORT/api/ready" >/dev/null 2>&1 && break
+  [ "$i" -lt 10 ] || fail "renewed certificate not served or trusted"
+  sleep 1
+done
+[ "$(stat -c %a "$WORK/tls/privkey.pem")" = 600 ] || fail "renewed key permissions"
+ok "local certificate renewal hook reloads nginx; new certificate and hostname verified, key mode 600"
+
+dc "$DST" stop postgres > /dev/null || fail "stop synthetic database"
+[ "$(code --max-time 10 "https://127.0.0.1:$HTTPS_PORT/api/ready")" = 503 ] || fail "database outage not reflected in readiness"
+[ "$(code --max-time 10 "https://127.0.0.1:$HTTPS_PORT/api/health")" = 200 ] || fail "liveness lost during database outage"
+dc "$DST" up -d --wait postgres > /dev/null || fail "restart synthetic database"
+for i in $(seq 1 10); do
+  [ "$(code --max-time 10 "https://127.0.0.1:$HTTPS_PORT/api/ready")" = 200 ] && break
+  [ "$i" -lt 10 ] || fail "readiness did not recover"
+  sleep 1
+done
+ok "database outage returns readiness 503 while liveness stays 200; readiness recovers after restart"
+
 api /api/health -D - -o /dev/null -H 'Origin: https://www.edulib.id' | grep -i '^access-control-allow-origin: https://www.edulib.id' > /dev/null || fail "CORS allow"
 api /api/health -D - -o /dev/null -H 'Origin: https://evil.example' | grep -i '^access-control-allow-origin' > /dev/null && fail "CORS allowed foreign origin"
 ok "CORS: edulib origin allowed, foreign origin not"
@@ -229,6 +276,7 @@ ok "spoofed X-Forwarded-For ignored (rate-limit key stable: $r1 -> $r2)"
 B1="$(q "$DST" "SELECT id FROM contents WHERE title = 'Buku 1';")"
 B2="$(q "$DST" "SELECT id FROM contents WHERE title = 'Buku 2';")"
 [ "$(api "/api/contents/$B1" | jget data.title)" = 'Buku 1' ] || fail "content read"
+[ "$(api '/api/contents/search?q=bUkU' | jget meta.total)" = 2 ] || fail "PostgreSQL case-insensitive search"
 ok "reads: /api/fields, /api/contents/$B1 from restored data"
 
 # Login with restored bcrypt hash, then writes; new ids must continue the sequences.
@@ -315,11 +363,13 @@ node -e '
 ' "$SNAP" "$ROOT/database/migrations" || fail "synthetic SQLite snapshot"
 dc "$IMP" up -d --wait --no-build postgres > /dev/null || fail "imp postgres"
 export IMP_PW; IMP_PW="$(rnd 24)"
-dc "$IMP" exec -T -e IMP_PW postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -v pw="$IMP_PW"' <<'SQL' || fail "create import staging DB"
+dc "$IMP" exec -T -e IMP_PW postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres' <<'SQL' || fail "create import staging DB"
+\getenv pw IMP_PW
 CREATE ROLE edulib_import_staging LOGIN PASSWORD :'pw';
 CREATE DATABASE edulib_import_staging OWNER edulib_import_staging;
 SQL
-impr() { dc "$IMP" run --rm --no-deps -e DB_DATABASE=edulib_import_staging -e DB_USER=edulib_import_staging -e DB_PASSWORD="$IMP_PW" "$@"; }
+export DB_PASSWORD="$IMP_PW"
+impr() { dc "$IMP" run --rm --no-deps -e DB_DATABASE=edulib_import_staging -e DB_USER=edulib_import_staging -e DB_PASSWORD "$@"; }
 impr -e CONFIRM_STAGING_DB=edulib_import_staging api node scripts/migrate-staging.js latest > /dev/null || fail "migrate import staging"
 impr -v "$SNAP:/import/source.db:ro" api node scripts/import-sqlite-to-pg.js --source /import/source.db > "$WORK/out" || { cat "$WORK/out" >&2; fail "import dry-run"; }
 impr -v "$SNAP:/import/source.db:ro" -e CONFIRM_IMPORT_DB=edulib_import_staging api node scripts/import-sqlite-to-pg.js --source /import/source.db --apply > "$WORK/out" \

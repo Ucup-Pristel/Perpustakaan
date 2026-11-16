@@ -99,6 +99,8 @@ Expected tables: `users`, `fields`, `sub_fields`, `contents`, `content_paths`, `
 
 ## 6. Start API and verify
 
+Compose checks `/api/ready` (database connectivity, release migrations, unlocked migration state). It returns 503 before the explicit migration completes. `/api/health` remains a process-only liveness check. Neither endpoint applies migrations.
+
 ```bash
 $DC up -d
 $DC ps

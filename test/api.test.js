@@ -88,6 +88,13 @@ test('health check menjawab ok', async () => {
   assert.equal((await res.json()).status, 'ok');
 });
 
+test('readiness is available only for the migrated database and is not cached', async () => {
+  const res = await get('/api/ready');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await res.json(), { status: 'ready' });
+});
+
 test('pagination menolak input invalid, bukan mengembalikan seluruh tabel', async () => {
   // LIMIT -1 di SQLite = tanpa batas. Ini pernah balas 200 + semua baris.
   for (const q of ['limit=-1', 'limit=0', 'limit=101', 'limit=1.5', 'limit=abc', 'page=0', 'page=abc', 'field_id=abc']) {
