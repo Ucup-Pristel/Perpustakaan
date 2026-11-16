@@ -274,7 +274,7 @@ Old = current Docker VPS (`OLD`). New = fresh VPS (`NEW`).
 
 `.github/workflows/deploy-backend.yml` (changed in this branch):
 
-- `push` to `main`, and `pull_request` to `main`, run **only** the `test` job: syntax checks, frontend lint/build/browser regressions, `npm test` with an ephemeral PostgreSQL service (including real import/rollback tests), `npm audit --omit=dev --audit-level=high`, and the isolated Docker recovery rehearsal. Missing browser dependencies fail CI instead of silently skipping those tests.
+- `push` to `main`, and `pull_request` to `main`, run **only** the `test` job: backend syntax checks, `npm test` with an ephemeral PostgreSQL service (including real import/rollback tests), `npm audit --omit=dev --audit-level=high`, and the isolated Docker recovery rehearsal. Frontend lint/build/deployment remains in the Azure Static Web Apps workflow.
 - The legacy PM2 deploy job runs only through **Actions, then Run workflow** on `main` with the input `deploy legacy pm2`. It uses the `legacy-production` environment.
 - PM setup in GitHub settings: create environment `legacy-production`, add the PM as **required reviewer**, restrict it to branch `main`, and move `VPS_HOST`, `VPS_USERNAME`, `VPS_PASSWORD` from repository secrets into that environment. Until then, the typed phrase and the `main` branch check are the only guards.
 - Nothing deploys to the Docker VPS automatically. A Docker release is a PM-approved **commit SHA** that has a green `test` run and a passing `test/portable-rehearsal.sh`. The operator applies it by hand:

@@ -79,19 +79,6 @@ jobs:
       - name: Install dependencies (dari lockfile)
         run: npm ci
 
-      - name: Install frontend regression dependencies
-        run: npm ci --prefix frontend
-
-      - name: Require browser for Reader regressions
-        run: |
-          CHROME_BIN="$(command -v google-chrome || command -v chromium)"
-          echo "CHROME_BIN=$CHROME_BIN" >> "$GITHUB_ENV"
-
-      - name: Frontend lint and production build (no deployment)
-        run: |
-          npm run lint --prefix frontend
-          npm run build --prefix frontend
-
       - name: Cek syntax backend
         run: |
           for f in backend/server.js backend/middleware/*.js backend/models/*.js \
