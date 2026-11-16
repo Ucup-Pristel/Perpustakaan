@@ -18,7 +18,7 @@ export default function Login() {
     setLoading(true)
     try {
       await login(email.trim(), password)
-      navigate('/', { replace: true })
+      navigate('/library', { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {
