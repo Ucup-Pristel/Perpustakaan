@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@microsoft/applicationinsights-web": "^3.4.4",
+    "embla-carousel-react": "^8.6.0",
+    "framer-motion": "^14.14.0",
     "lucide-react": "^1.44.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

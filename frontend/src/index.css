@@ -1,8 +1,55 @@
 @import "tailwindcss";
 
+@theme {
+  /* Palet landing Edulib: ivory/cream sebagai kanvas, burnt orange sebagai aksen,
+     charcoal sebagai tinta. Sengaja dibatasi supaya tidak jadi pelangi. */
+  --color-ivory: #faf7f1;
+  --color-cream: #f3ece0;
+  --color-sand: #e6dccb;
+  --color-clay: #c65d28;
+  --color-clay-deep: #a8481c;
+  --color-charcoal: #221f1b;
+  --color-ink: #3a342d;
+  --color-muted: #7a6f62;
+
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+
+  body {
+    background-color: var(--color-ivory);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    /* Cegah halaman bisa digeser ke samping kalau ada transform/elemen lebar
+       sesaat saat animasi parallax berjalan. */
+    overflow-x: clip;
+  }
+}
+
 @layer components {
   .field {
     @apply w-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 placeholder-amber-400 outline-none focus:ring-2 focus:ring-amber-300;
   }
 }
 
+@layer utilities {
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}

@@ -1,0 +1,74 @@
+/* Keep the clipping frame separate from the 3D plane. These dimensions follow
+   the covers, leaving room for the translated third row without an arbitrary
+   300vh spacer on tall phones or short laptops. */
+.hero-parallax {
+  --book-width: clamp(8.5rem, 20vw, 24rem);
+  --book-gap: clamp(1.25rem, 4.5vw, 4rem);
+  --row-gap: clamp(1.5rem, 4vw, 4rem);
+  overflow: clip;
+}
+
+.hero-parallax--animated {
+  perspective: 1000px;
+  padding-bottom: calc(var(--hero-settle) + var(--row-gap));
+}
+
+.hero-parallax--animated .hero-book-plane {
+  /* Compensate the final +500px translation in layout. Otherwise the reveal
+     leaves half an empty viewport between the heading and the first row. */
+  margin-top: calc(-1 * var(--hero-settle));
+}
+
+.hero-header {
+  padding-bottom: clamp(5rem, 10vw, 9rem);
+}
+
+.hero-parallax--animated .hero-header::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  inset: -4rem calc(50% - 50vw) 0;
+  background: radial-gradient(ellipse at 30% 35%, var(--color-ivory) 15%, rgb(250 247 241 / 0.96) 40%, transparent 75%);
+}
+
+.hero-book-plane {
+  position: relative;
+  transform-style: preserve-3d;
+}
+
+.hero-book-row {
+  gap: var(--book-gap);
+}
+
+.hero-book-row + .hero-book-row {
+  margin-top: var(--row-gap);
+}
+
+.hero-book {
+  width: var(--book-width);
+  aspect-ratio: 2 / 3;
+}
+
+.hero-parallax--still {
+  --book-width: clamp(8.5rem, 16vw, 12rem);
+  --book-gap: 1.25rem;
+  padding-bottom: 2rem;
+}
+
+.hero-parallax--still .hero-header {
+  padding-bottom: 2.5rem;
+}
+
+.hero-parallax--still .hero-book-row {
+  overflow-x: auto;
+  padding: 0.5rem 1.25rem 1.5rem;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 1.25rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-sand) transparent;
+}
+
+.hero-parallax--still .hero-book {
+  scroll-snap-align: start;
+}

@@ -117,7 +117,7 @@ function Empty({ icon, text }) {
     <div className="rounded-2xl border border-dashed border-amber-200 bg-white p-8 text-center text-gray-500">
       <div className="text-amber-500 flex justify-center mb-3">{icon}</div>
       <p>{text}</p>
-      <Link to="/" className="inline-flex items-center gap-1 mt-4 text-sm font-medium text-amber-700 hover:text-amber-900">Cari materi <ChevronRight size={16} /></Link>
+      <Link to="/library" className="inline-flex items-center gap-1 mt-4 text-sm font-medium text-amber-700 hover:text-amber-900">Cari materi <ChevronRight size={16} /></Link>
     </div>
   )
 }

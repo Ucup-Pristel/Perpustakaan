@@ -82,8 +82,8 @@ export default function ContentList() {
   return (
     <main className="min-h-screen bg-orange-50 px-4 sm:px-6 py-8">
       <div className="max-w-6xl mx-auto">
-        <Link to="/" className="inline-flex items-center gap-1 text-sm text-amber-700 hover:text-amber-900 mb-6">
-          <ArrowLeft size={16} /> Kembali ke bidang
+        <Link to="/karier" className="inline-flex items-center gap-1 text-sm text-amber-700 hover:text-amber-900 mb-6">
+          <ArrowLeft size={16} /> Kembali ke eksplorasi karier
         </Link>
 
         <div className="bg-gradient-to-br from-amber-800 to-orange-700 text-white rounded-2xl px-6 py-8 mb-8">

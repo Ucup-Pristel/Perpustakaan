@@ -196,7 +196,7 @@ export default function AdminUpload() {
           <Link to="/dashboard" className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 hover:underline">
             <LayoutDashboard className="w-3.5 h-3.5" /> Dashboard Saya
           </Link>
-          <Link to="/" className="text-xs text-amber-700 hover:underline">← Kembali ke Beranda</Link>
+          <Link to="/library" className="text-xs text-amber-700 hover:underline">← Kembali ke Perpustakaan</Link>
         </div>
       </div>
 

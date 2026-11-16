@@ -1,9 +1,9 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Link, useLocation, matchPath } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import Navbar from './components/Navbar'
-import Home from './components/Home'
+import Career from './pages/Career'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import ForgotPassword from './pages/ForgotPassword'
@@ -11,6 +11,10 @@ import ResetPassword from './pages/ResetPassword'
 
 // Reader menarik react-pdf + pdf.worker (bagian terbesar bundle) dan hanya dipakai
 // di satu route. Dipisah lewat lazy() supaya halaman awal tidak ikut mengunduhnya.
+// Landing memuat framer-motion untuk animasi hero. Halaman aplikasi lain
+// memuatnya hanya bila memang memakai animasi.
+const Landing = lazy(() => import('./pages/Landing'))
+const Library = lazy(() => import('./pages/Library'))
 const Reader = lazy(() => import('./pages/Reader'))
 const ContentList = lazy(() => import('./pages/ContentList'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -65,27 +69,44 @@ function NotFound() {
   )
 }
 
+// Landing (route "/") punya navigasi sendiri; halaman aplikasi memakai Navbar aplikasi.
+// Memakai matchPath, bukan cek pathname mentah, supaya `/library` tidak ikut.
+const APP_ROUTES = ['/library', '/karier', '/login', '/register', '/forgot-password', '/reset-password', '/search', '/read/:contentId', '/field/:fieldId', '/dashboard', '/admin']
+
+function AppShell() {
+  const { pathname } = useLocation()
+  const isAppRoute = APP_ROUTES.some(pattern => matchPath(pattern, pathname))
+
+  return (
+    <>
+      {isAppRoute && <Navbar />}
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/library" element={<Library />} />
+          <Route path="/karier" element={<Career />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/search" element={<SearchResults />} />
+          <Route path="/read/:contentId" element={<Reader />} />
+          <Route path="/field/:fieldId" element={<ContentList />} />
+          <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
+          <Route path="/admin" element={<RequireAuth adminOnly><AdminUpload /></RequireAuth>} />
+          {/* Tanpa ini, URL salah hanya menampilkan navbar dan halaman kosong. */}
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
+    </>
+  )
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Navbar />
-        <Suspense fallback={<PageLoader />}>
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/reset-password" element={<ResetPassword />} />
-            <Route path="/search" element={<SearchResults />} />
-            <Route path="/read/:contentId" element={<Reader />} />
-            <Route path="/field/:fieldId" element={<ContentList />} />
-            <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
-            <Route path="/admin" element={<RequireAuth adminOnly><AdminUpload /></RequireAuth>} />
-            {/* Tanpa ini, URL salah hanya menampilkan navbar dan halaman kosong. */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Suspense>
+        <AppShell />
       </AuthProvider>
     </BrowserRouter>
   )
