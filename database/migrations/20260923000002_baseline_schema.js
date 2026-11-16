@@ -16,9 +16,17 @@
  */
 'use strict';
 
-exports.up = async function up(knex) {
-  const isSqlite = knex.client.config.client === 'sqlite3';
+// Index untuk query panas: daftar konten per sub-bidang + lookup aktivitas per user.
+// Identifier di-bind lewat `??` supaya Knex meng-quote sesuai dialect
+// (SQLite: backtick, PostgreSQL: double quote). `IF NOT EXISTS` / `IF EXISTS`
+// didukung keduanya (SQLite >= 3.3, PostgreSQL >= 9.5), jadi tetap idempoten.
+const INDEXES = [
+  { name: 'contents_sub_field_level_idx', table: 'contents', columns: ['sub_field_id', 'level'] },
+  { name: 'notes_user_idx', table: 'notes', columns: ['user_id'] },
+  { name: 'reading_progress_user_idx', table: 'reading_progress', columns: ['user_id'] },
+];
 
+exports.up = async function up(knex) {
   if (!(await knex.schema.hasTable('users'))) {
     await knex.schema.createTable('users', (t) => {
       t.increments('id').primary();
@@ -135,19 +143,17 @@ exports.up = async function up(knex) {
     console.log('  [baseline] user_progress dibuat');
   }
 
-  // Index untuk query panas: daftar konten per sub-bidang + lookup aktivitas per user.
-  if (isSqlite) {
-    await knex.raw('CREATE INDEX IF NOT EXISTS contents_sub_field_level_idx ON `contents` (`sub_field_id`, `level`)');
-    await knex.raw('CREATE INDEX IF NOT EXISTS notes_user_idx ON `notes` (`user_id`)');
-    await knex.raw('CREATE INDEX IF NOT EXISTS reading_progress_user_idx ON `reading_progress` (`user_id`)');
+  for (const { name, table, columns } of INDEXES) {
+    const cols = columns.map(() => '??').join(', ');
+    await knex.raw(`CREATE INDEX IF NOT EXISTS ?? ON ?? (${cols})`, [name, table, ...columns]);
   }
 };
 
 exports.down = async function down(knex) {
   // Baseline tidak menghapus tabel berisi data produksi. Rollback schema awal
-  // dilakukan manual dari backup, bukan lewat drop otomatis.
-  if (knex.client.config.client !== 'sqlite3') return;
-  await knex.raw('DROP INDEX IF EXISTS contents_sub_field_level_idx');
-  await knex.raw('DROP INDEX IF EXISTS notes_user_idx');
-  await knex.raw('DROP INDEX IF EXISTS reading_progress_user_idx');
+  // dilakukan manual dari backup, bukan lewat drop otomatis. Yang di-drop
+  // hanya index (tanpa data), di SQLite maupun PostgreSQL.
+  for (const { name } of INDEXES) {
+    await knex.raw('DROP INDEX IF EXISTS ??', [name]);
+  }
 };

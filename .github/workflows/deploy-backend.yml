@@ -1,5 +1,10 @@
 name: Deploy Backend to VPS
 
+# Migration period (SQLite/PM2 -> PostgreSQL/Docker): push and PR run ONLY the
+# test gate. Deploying to the legacy PM2 VPS is manual: Actions -> "Deploy
+# Backend to VPS" -> Run workflow on `main`, type the confirmation phrase.
+# The `legacy-production` environment should have required reviewers (PM).
+# No automatic deploy to the new Docker VPS exists yet, on purpose.
 on:
   push:
     branches:
@@ -9,21 +14,56 @@ on:
       - 'database/**'
       - 'scripts/**'
       - 'test/**'
+      - 'infra/**'
       - 'knexfile.js'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/deploy-backend.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'database/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'infra/**'
+      - 'knexfile.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: deploy legacy pm2'
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 # Deploy ke satu VPS: jangan pernah dua run bersamaan. Tanpa ini, dua run bisa
 # git pull + npm ci + pm2 restart berbarengan dan saling merusak.
+# Manual deploys get their own group so queued PR/push test runs can never
+# replace a pending deploy (GitHub keeps only the newest pending run per group).
 concurrency:
-  group: deploy-backend
+  group: ${{ github.event_name == 'workflow_dispatch' && 'deploy-backend' || format('test-backend-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
   # Gate: kalau test gagal, deploy tidak pernah jalan.
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_PASSWORD: ci-synthetic-only
+        ports:
+          - 127.0.0.1:55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       # Action di-pin ke commit SHA, bukan tag atau @master — tag bisa dipindah
       # ke commit lain dan diam-diam mengeksekusi kode baru di runner kita.
@@ -51,12 +91,27 @@ jobs:
         run: npm test
         env:
           JWT_SECRET: ci-test-secret-not-used-in-production
+          IMPORT_TEST_PG_ADMIN_URL: postgres://postgres:ci-synthetic-only@127.0.0.1:55432/postgres
 
       - name: Audit dependency production
         run: npm audit --omit=dev --audit-level=high
 
+      - name: Build local rehearsal image
+        run: docker build -f infra/Dockerfile.api -t edulib-api:ci-rehearsal .
+
+      - name: Rehearse isolated backup, restore and recovery
+        run: bash test/portable-rehearsal.sh
+        env:
+          EDULIB_API_IMAGE: edulib-api:ci-rehearsal
+
   deploy:
     needs: test
+    # Never on push/PR. Manual run from main with the exact phrase only.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm == 'deploy legacy pm2'
+    environment: legacy-production
     runs-on: ubuntu-latest
     steps:
       # scripts/deploy.sh yang mengurus urutannya: backup -> pull -> npm ci ->

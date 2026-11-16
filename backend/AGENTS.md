@@ -53,7 +53,12 @@ The VPS should not become permanent media storage.
 
 Uploads follow the existing pattern:
 
-request → multer → buffer → R2 → URL/path stored in database
+request
+→ multer
+→ temporary disk storage
+→ stream upload to Cloudflare R2
+→ temporary file cleanup
+→ database URL/path
 
 Preserve this architecture.
 

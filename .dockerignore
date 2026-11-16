@@ -1,0 +1,25 @@
+# Build backend only; no local secrets, databases, or frontend assets.
+.git
+.github
+.codegraph
+frontend
+node_modules
+**/node_modules
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+backups
+**/backups
+logs
+**/logs
+*.log
+docs
+test
+README.md
+*.md
+!.dockerignore
