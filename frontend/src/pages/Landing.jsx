@@ -280,7 +280,7 @@ function CareerShowcase({ fields, loading }) {
               menghubungkan minat dengan materi pembelajaran yang relevan.
             </p>
             <Link
-              to="/library"
+              to="/karier"
               className="mt-8 inline-flex items-center gap-2 rounded-full bg-ivory px-5 py-2.5 text-sm font-semibold text-charcoal transition hover:bg-cream"
             >
               Mulai eksplorasi <ArrowRight className="h-4 w-4" aria-hidden="true" />

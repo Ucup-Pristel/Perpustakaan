@@ -85,7 +85,7 @@ function FieldCard({ field }) {
 }
 
 // --- Main ---
-export default function Home() {
+export default function Career() {
   const [fields, setFields]   = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)

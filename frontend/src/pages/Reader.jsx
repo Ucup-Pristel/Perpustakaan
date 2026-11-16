@@ -550,7 +550,7 @@ function ReaderSession({ cid, token }) {
           {loading && <div className="flex justify-center pt-20"><Loader2 className="animate-spin text-amber-600" /></div>}
           {error && <div className="mx-auto max-w-2xl rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">{error}</div>}
           {!loading && !error && content && (
-            <Document file={content.file_url} onLoadSuccess={onDocumentLoadSuccess} loading={<div className="flex justify-center py-20"><Loader2 className="animate-spin text-amber-600" /></div>} error={<p className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">PDF gagal dimuat. Pastikan file dapat diakses dari browser.</p>}>
+            <Document suspense={false} file={content.file_url} onLoadSuccess={onDocumentLoadSuccess} loading={<div className="flex justify-center py-20"><Loader2 className="animate-spin text-amber-600" /></div>} error={<p className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">PDF gagal dimuat. Pastikan file dapat diakses dari browser.</p>}>
               <div ref={documentRef} className="mx-auto flex w-full max-w-5xl flex-col gap-2">
                 {!ready && <div className="flex justify-center py-20"><Loader2 className="animate-spin text-amber-600" /></div>}
                 {ready && pageRatios.map((ratio, index) => (

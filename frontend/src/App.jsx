@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, Link, useLocation, matchPath } 
 import { Loader2 } from 'lucide-react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import Navbar from './components/Navbar'
-import Home from './components/Home'
+import Career from './pages/Career'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import ForgotPassword from './pages/ForgotPassword'
@@ -11,9 +11,10 @@ import ResetPassword from './pages/ResetPassword'
 
 // Reader menarik react-pdf + pdf.worker (bagian terbesar bundle) dan hanya dipakai
 // di satu route. Dipisah lewat lazy() supaya halaman awal tidak ikut mengunduhnya.
-// Landing memuat framer-motion (hanya untuk animasi hero). Dipisah supaya
-// halaman aplikasi lain tidak ikut mengunduh library animasi itu.
+// Landing memuat framer-motion untuk animasi hero. Halaman aplikasi lain
+// memuatnya hanya bila memang memakai animasi.
 const Landing = lazy(() => import('./pages/Landing'))
+const Library = lazy(() => import('./pages/Library'))
 const Reader = lazy(() => import('./pages/Reader'))
 const ContentList = lazy(() => import('./pages/ContentList'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -68,9 +69,9 @@ function NotFound() {
   )
 }
 
-// Landing (route "/") punya navigasi sendiri; aplikasi tetap memakai Navbar lama.
+// Landing (route "/") punya navigasi sendiri; halaman aplikasi memakai Navbar aplikasi.
 // Memakai matchPath, bukan cek pathname mentah, supaya `/library` tidak ikut.
-const APP_ROUTES = ['/library', '/login', '/register', '/forgot-password', '/reset-password', '/search', '/read/:contentId', '/field/:fieldId', '/dashboard', '/admin']
+const APP_ROUTES = ['/library', '/karier', '/login', '/register', '/forgot-password', '/reset-password', '/search', '/read/:contentId', '/field/:fieldId', '/dashboard', '/admin']
 
 function AppShell() {
   const { pathname } = useLocation()
@@ -82,7 +83,8 @@ function AppShell() {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/" element={<Landing />} />
-          <Route path="/library" element={<Home />} />
+          <Route path="/library" element={<Library />} />
+          <Route path="/karier" element={<Career />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />

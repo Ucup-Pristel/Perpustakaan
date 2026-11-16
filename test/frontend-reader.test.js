@@ -157,6 +157,7 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
     await open();
     await new Promise(r => setTimeout(r, 500));
     assert.ok(await evaluate('document.querySelectorAll("canvas").length'), 'Loaded PDF must render canvases, not permanent placeholders');
+    assert.equal(await evaluate('window.fallbackShown'), 0, 'initial PDF load must not unmount the Reader');
   });
 
   await t.test('note form cannot submit previous page text while next page loads', async () => {
