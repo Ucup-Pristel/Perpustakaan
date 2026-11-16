@@ -403,7 +403,6 @@ export default function Landing() {
     <div className="min-h-screen bg-ivory">
       <LandingNavbar />
       <main>
-        <h1 className="sr-only">Edulib, perpustakaan digital dan eksplorasi karier</h1>
         <HeroParallax cards={cards} />
         <About />
         <Features />

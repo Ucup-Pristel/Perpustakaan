@@ -7,7 +7,7 @@
  *  2. Sampul kurasi lokal di `assets/hero-covers/` — dipakai kalau backend mati,
  *     kolom cover kosong, atau URL-nya dokumen (bukan gambar).
  *
- * Komposisi hero butuh jumlah kartu yang pasti (min. 15, 3 baris) supaya
+ * Komposisi hero butuh jumlah kartu yang pasti (24, 3 baris) supaya
  * parallax-nya terbentuk; karena itu daftar selalu diisi sampai TOTAL kartu.
  */
 
@@ -80,7 +80,7 @@ export function buildHeroCards(contents = []) {
   const cards = []
 
   // Sampul kurasi berikutnya yang belum terpakai, untuk mengisi slot atau
-  // menjadi cadangan kalau sampul API ternyata bukan gambar portrait.
+  // menjadi cadangan kalau gambar API gagal dimuat.
   const takeCurated = () => {
     const item = CURATED.find(entry => !used.has(entry.file))
     if (item) used.add(item.file)
@@ -95,8 +95,9 @@ export function buildHeroCards(contents = []) {
       const match = CURATED.find(
         item => !used.has(item.file) && normalize(item.title) === normalize(content?.title)
       )
-      // Selalu siapkan cadangan: rasio diperiksa setelah gambar termuat.
+      // Selalu siapkan cadangan kalau URL API gagal dimuat.
       const fallback = match || takeCurated()
+      if (fallback) used.add(fallback.file)
       cards.push({
         key: `content-${content.id}`,
         title: content.title,
@@ -114,6 +115,7 @@ export function buildHeroCards(contents = []) {
     ) || takeCurated()
 
     if (placeholder) {
+      used.add(placeholder.file)
       cards.push({
         key: `content-${content.id}`,
         title: content.title,
