@@ -361,6 +361,9 @@ node -e '
     await k.destroy();
   })().catch((e) => { console.error(e.message); process.exit(1); });
 ' "$SNAP" "$ROOT/database/migrations" || fail "synthetic SQLite snapshot"
+# The bind-mounted importer runs as the image's non-root node user. Keep the
+# synthetic snapshot immutable while allowing that user to read the host file.
+chmod 0444 "$SNAP" || fail "snapshot permissions"
 dc "$IMP" up -d --wait --no-build postgres > /dev/null || fail "imp postgres"
 export IMP_PW; IMP_PW="$(rnd 24)"
 dc "$IMP" exec -T -e IMP_PW postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres' <<'SQL' || fail "create import staging DB"
