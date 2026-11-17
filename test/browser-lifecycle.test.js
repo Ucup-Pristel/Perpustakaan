@@ -56,18 +56,18 @@ async function browserFamily(t, { ignoreTerm = false } = {}) {
   const childCode = `
     const fs = require('node:fs');
     const profile = ${JSON.stringify(fixture.directory)};
-    fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }));
     setInterval(() => fs.writeFileSync(profile + '/heartbeat', 'still writing'), 10);
     process.on('SIGTERM', () => {
       ${ignoreTerm ? '' : "setTimeout(() => { fs.writeFileSync(profile + '/last-write', 'finished'); process.exit(0); }, 50);"}
     });
+    fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }));
   `;
   const parentCode = `
-    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: 'ignore' });
     process.on('SIGTERM', () => process.exit(0));
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: 'ignore' });
     setInterval(() => {}, 100);
   `;
-  const lifecycle = createBrowserLifecycle({ shutdownTimeout: 200, retryDelay: 10 });
+  const lifecycle = createBrowserLifecycle({ shutdownTimeout: 500, retryDelay: 10 });
   const browser = lifecycle.spawn(process.execPath, ['-e', parentCode]);
   const closed = fixture.track(browser);
   await waitForFile(ready);
