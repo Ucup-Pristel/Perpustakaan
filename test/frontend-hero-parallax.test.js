@@ -12,7 +12,9 @@ const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '../frontend');
 const chrome = process.env.CHROME_BIN || ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(fs.existsSync);
-const available = chrome && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+const available = chrome && fs.existsSync(chrome) && typeof globalThis.WebSocket === 'function' && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+// CI must fail if prerequisites disappear; local backend-only runs may skip.
+if (process.env.CI) assert.ok(available, 'Browser regressions are mandatory in CI: install frontend dependencies and provide Chrome/WebSocket (Node 22).');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label, timeout = 15000) {
   const end = Date.now() + timeout;

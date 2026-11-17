@@ -132,7 +132,30 @@ $DC ps                        # postgres: healthy
 
 `init-app-role.sh` runs **only** when the volume is empty. It creates `APP_DB_USER` (no superuser, createdb or createrole) and `APP_DB_NAME`, owned by that role. Changing these values later does nothing to an existing volume.
 
-### 4a. Schema: explicit migration only
+Choose exactly one path before running any API command:
+
+| Intended installation | Procedure | State of the final `APP_DB_NAME` database before starting |
+| --- | --- | --- |
+| Fresh installation without existing user data | **4a only** | Empty; explicitly migrate it, then create the first admin |
+| Import existing SQLite data | **4b only** | Empty until the verified PostgreSQL dump is restored; migrate only the temporary import database |
+
+Keep the API stopped until the chosen path is complete. For an import, do not
+run `migrate-prod.js status`, `latest`, `unlock`, seeds or `create-admin.js`
+against the final database first. Even `status` may create Knex bookkeeping
+tables; restore refuses **any** existing relation, not just user data. Check
+emptiness without modifying the schema:
+
+```bash
+$DC exec -T postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U "$APP_DB_USER" -d "$APP_DB_NAME"' <<'SQL'
+SELECT count(*) AS public_relations
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public';
+SQL
+# Import path requires public_relations = 0. Otherwise stop and investigate
+# the target/project; do not automatically drop tables or a volume.
+```
+
+### 4a. Fresh empty installation — no SQLite import
 
 The API never migrates on startup. Migrations run in a throwaway container with a typed confirmation:
 
@@ -144,7 +167,8 @@ $DC run --rm api node scripts/migrate-prod.js status                      # expe
 
 Guards: `DB_CLIENT=pg`, no `*_staging` target, and for `latest`/`unlock` `CONFIRM_PROD_DB` must equal `DB_DATABASE`. After connecting, the server's `current_database()`/`current_user` are checked again. A failed batch rolls back as one transaction (PostgreSQL DDL is transactional).
 
-Then continue with **4b** (move legacy data) or, for an empty install, create the first admin (password read silently, never in argv):
+Create the first admin only for this fresh installation (password read silently,
+never in argv). Do not proceed to 4b afterwards:
 
 ```bash
 read -rs ADMIN_PASSWORD && export ADMIN_PASSWORD
@@ -153,9 +177,17 @@ sudo --preserve-env=ADMIN_PASSWORD docker compose --env-file /opt/edulib/prod.en
 unset ADMIN_PASSWORD
 ```
 
+Start the stack with `$DC up -d --wait`, verify `/api/ready` and the application,
+and complete the operational acceptance checklist in section 10. Subsequent
+schema updates use the guarded release procedure in section 7.
+
 ### 4b. One-time SQLite import (legacy VPS to first Docker VPS)
 
-The importer writes only to `*_staging` databases. Import into a temporary `edulib_import_staging` database in the **same private cluster**, then move it into `edulib` with the normal guarded restore. Steps:
+Skip 4a entirely. The importer writes only to `*_staging` databases. Import into
+a temporary `edulib_import_staging` database in the **same private cluster**, then
+restore its verified dump into the still-empty final `edulib` database. Do not
+seed or create an admin: existing users, password hashes and roles are imported.
+If any preflight/guard fails, stop and investigate; do not bypass it. Steps:
 
 1. Freeze writes on legacy: `pm2 stop perpustakaan-api`. Users see errors from now until DNS cutover.
 2. Snapshot and transfer as in `infra/README-staging.md` §8 a–b (`VACUUM INTO`, `journal_mode=DELETE`, `sha256sum`, `scp`), into `/opt/edulib/import/edulib-snapshot.db`, mode `0440`, group `1000`.
@@ -185,7 +217,10 @@ The importer writes only to `*_staging` databases. Import into a temporary `edul
      api node scripts/import-sqlite-to-pg.js --source /import/source.db --apply          # expect SELESAI
    ```
 
-5. Move it into the app database. `edulib` must be empty, so do **not** run 4a `latest` first. The dump contains the schema and `knex_migrations`.
+5. Keep the API stopped and restore into the empty app database. Do **not** run
+   any of 4a first, including `status`. The dump already contains the schema and
+   `knex_migrations`. Check the Compose project and database names before setting
+   `CONFIRM_RESTORE`; the example below uses the default `edulib-prod/edulib`.
 
    ```bash
    P="sudo env EDULIB_ENV_FILE=/opt/edulib/prod.env scripts/pg-portable.sh"
@@ -193,9 +228,12 @@ The importer writes only to `*_staging` databases. Import into a temporary `edul
    $P verify "$F"
    sudo env EDULIB_ENV_FILE=/opt/edulib/prod.env CONFIRM_RESTORE=edulib-prod/edulib scripts/pg-portable.sh restore "$F"
    $DC run --rm api node scripts/migrate-prod.js status                                    # pending: 0
+   $P report                                                                           # inspect rows, constraints, sequences
    ```
 
-6. Clean up the temporary database and the snapshot:
+6. After successful restore and integrity checks, clean up the temporary database
+   and transferred snapshot. Retain the verified dump/checksum securely and keep
+   the original frozen SQLite database intact for rollback:
 
    ```bash
    $DC exec -T postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres' <<'SQL'
@@ -205,7 +243,12 @@ The importer writes only to `*_staging` databases. Import into a temporary `edul
    sudo shred -u /opt/edulib/import/edulib-snapshot.db
    ```
 
-7. Continue with section 6 steps 4–12 (start, validate, DNS). The legacy SQLite file stays untouched on the legacy VPS as the rollback source.
+7. Continue with section 6 **steps 8–12 only** for start, validation, authorized
+   cutover and monitoring, keeping the legacy SQLite API stopped throughout.
+   Do not run section 6 steps 3–7: those are for PostgreSQL relocation and include
+   resetting the destination, which would destroy the import just restored.
+   Verify imported row counts, representative records, IDs/FKs and sequence
+   continuation against the importer report and retained snapshot before cutover.
 
 **Initial-cutover rollback differs from a PostgreSQL relocation.** Before the new
 API accepts writes, the frozen SQLite copy remains a valid rollback source.
@@ -274,7 +317,7 @@ Old = current Docker VPS (`OLD`). New = fresh VPS (`NEW`).
 
 `.github/workflows/deploy-backend.yml` (changed in this branch):
 
-- `push` to `main`, and `pull_request` to `main`, run **only** the `test` job: backend syntax checks, `npm test` with an ephemeral PostgreSQL service (including real import/rollback tests), `npm audit --omit=dev --audit-level=high`, and the isolated Docker recovery rehearsal. Frontend lint/build/deployment remains in the Azure Static Web Apps workflow.
+- `push` to `main`, and `pull_request` to `main`, run **only** the `test` job: backend syntax checks, frontend lint/build, the complete `test/*.test.js` suite with `--test-concurrency=1` and an ephemeral PostgreSQL service (including real import/rollback tests), `npm audit --omit=dev --audit-level=high`, and the isolated Docker recovery rehearsal. Frontend changes also trigger this gate. CI installs frontend dependencies and requires Chrome/WebSocket (Node 22); Hero, Library and Reader suites fail rather than skip when prerequisites are missing. Frontend deployment remains separate in the Azure Static Web Apps workflow.
 - The legacy PM2 deploy job runs only through **Actions, then Run workflow** on `main` with the input `deploy legacy pm2`. It uses the `legacy-production` environment.
 - PM setup in GitHub settings: create environment `legacy-production`, add the PM as **required reviewer**, restrict it to branch `main`, and move `VPS_HOST`, `VPS_USERNAME`, `VPS_PASSWORD` from repository secrets into that environment. Until then, the typed phrase and the `main` branch check are the only guards.
 - Nothing deploys to the Docker VPS automatically. A Docker release is a PM-approved **commit SHA** that has a green `test` run and a passing `test/portable-rehearsal.sh`. The operator applies it by hand:
@@ -290,7 +333,7 @@ $DC up -d api && $DC ps
 
 Code rollback means setting the previous `EDULIB_API_IMAGE` and running `$DC up -d api`. If the release ran a migration, a schema rollback means restoring the pre-release backup into an emptied DB. That loses writes made since then and needs a PM decision.
 
-The Azure Static Web Apps workflow is unchanged.
+Azure deployment stays separate. Its PR preview trigger is limited to `frontend/**`, so an infrastructure/test/runbook-only PR does not deploy a preview. Its existing main-push deployment trigger is preserved; merging a change to that workflow still requires separate deployment authorization. Browser suites run sequentially in the test gate to avoid competing Chromium/PDF processes; assertions and per-condition timeouts are preserved.
 
 ## 8. Clean-room rehearsal (local, synthetic)
 
@@ -308,3 +351,41 @@ It creates and removes only the projects `edulib-t11-src`, `edulib-t11-dst` and 
 - Not exercised locally: real Let's Encrypt issuance and renewal, real R2 and Resend calls, the provider firewall, GitHub environment protection. Verify them during the first real staging rehearsal.
 - `pg-portable.sh report` hashes each table in memory. That is fine at MVP size; revisit it above ~100 MB per table.
 - Never `docker compose down -v` this project, and never `docker system prune` or `docker volume prune` on the VPS.
+
+## 10. Operational acceptance before production cutover
+
+Repository validation does not authorize production changes. Record an owner,
+evidence and a go/no-go decision for each item below on the approved target.
+
+- **Encrypted offsite backups:** provision private storage outside the VPS/provider
+  account, dedicated least-privilege upload credentials, separately held recovery
+  keys, 14 daily/8 weekly retention and failure alerts. Never use the public media
+  bucket. Schedule backup plus verification; a local dump alone is insufficient.
+- **Tested recovery:** download and decrypt an offsite backup onto an isolated
+  host, verify its checksum, restore, compare integrity reports, and test login,
+  reading progress, notes and subsequent IDs. Measure recovery against agreed
+  RPO/RTO with representative data; synthetic CI timings do not establish them.
+- **TLS:** verify the real hostname/chain, issuance, expiry monitoring, renewal
+  timer and deploy hook. A self-signed local renewal test does not prove actual
+  certificate-authority issuance or the VPS timer configuration.
+- **Firewall:** verify provider rules and IPv4/IPv6 exposure: only required SSH
+  (restricted admin sources), HTTP and HTTPS. PostgreSQL and Node must have no
+  public ports. Check DNS records without changing them until cutover approval.
+- **Secrets and release controls:** provision the external mode-600 env file,
+  restrict Docker/admin access, rotate credentials under an approved plan and
+  preserve JWT signing continuity where intended. Verify GitHub environment
+  reviewers, protected branches and green CI; retain the prior approved image
+  digest and pre-change backup. Never put secret values in command arguments.
+- **Write freeze:** announce maintenance, stop every old API/writer before the
+  final SQLite snapshot, migrate only the transferred copy if needed, and keep
+  the old API stopped through validation and DNS propagation. Do not permit two
+  writable databases to serve users simultaneously.
+- **Rollback:** document the decision point, retained snapshots/images and
+  accountable operator. Before new writes, the frozen SQLite copy can be used;
+  after new PostgreSQL writes it is stale and needs reconciliation or explicit
+  acceptance of lost writes. There is no automatic PostgreSQL-to-SQLite rollback.
+- **Cutover verification:** verify `/api/ready`, TLS, imported users/roles and
+  representative records, row counts, FKs, sequences, login and reader/activity
+  flows before an authorized DNS switch. Validate real R2/email only with separate
+  authorization. Monitor errors, readiness, storage and the first scheduled
+  offsite backup afterwards; keep the old system stopped but recoverable.

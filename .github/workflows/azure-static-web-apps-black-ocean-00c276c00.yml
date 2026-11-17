@@ -11,6 +11,9 @@ on:
     types: [opened, synchronize, reopened, closed]
     branches:
       - main
+    # Infrastructure/test/runbook PRs must not deploy a frontend preview.
+    paths:
+      - 'frontend/**'
 
 jobs:
   build_and_deploy_job:

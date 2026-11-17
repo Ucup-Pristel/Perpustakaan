@@ -10,7 +10,9 @@ const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '../frontend');
 const chrome = process.env.CHROME_BIN || ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(fs.existsSync);
-const available = chrome && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+const available = chrome && fs.existsSync(chrome) && typeof globalThis.WebSocket === 'function' && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+// CI must fail if prerequisites disappear; local backend-only runs may skip.
+if (process.env.CI) assert.ok(available, 'Browser regressions are mandatory in CI: install frontend dependencies and provide Chrome/WebSocket (Node 22).');
 
 // Long fixture mixes portrait and landscape pages (4, 8, 12) so placeholder height
 // must come from each page's own aspect ratio, not one constant.
@@ -227,11 +229,15 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
   await t.test('rapid scrolling loads notes only for the page it settles on', async () => {
     await open('?content=3', 12);
     await until(() => evaluate(`document.querySelector('textarea').value === 'Note page 1'`), 'page one note');
-    await evaluate('window.calls.length = 0');
-    for (let p = 2; p <= 7; p++) {
-      await evaluate(`${slot(p)}.scrollIntoView()`);
-      await new Promise(r => setTimeout(r, 50));
-    }
+    // Schedule the gesture in the browser: CDP round trips under load can turn
+    // a nominal 50ms pause into a settled page and legitimately trigger notes.
+    await evaluate(`(async () => {
+      window.calls.length = 0;
+      for (let p = 2; p <= 7; p++) {
+        document.querySelector('[data-page="' + p + '"]').scrollIntoView();
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    })()`);
     await until(() => evaluate(`document.querySelector('textarea').value === 'Note page 7'`), 'settled page note');
     assert.deepEqual(await noteReads(), ['?page_number=7']);
   });
