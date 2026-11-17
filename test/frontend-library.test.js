@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { createBrowserLifecycle } = require('./helpers/browser-lifecycle');
 const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '../frontend');
@@ -135,23 +135,13 @@ test('Library shelves: real data, carousel, filters, responsive and failure stat
     }],
   });
 
-  let browser, socket;
-  t.after(async () => {
-    socket?.close();
-    if (browser && browser.exitCode === null) {
-      browser.kill();
-      await new Promise(resolve => browser.once('exit', resolve));
-    }
-    await server.close();
-    await delay(200);
-    try {
-      fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    } catch {}
-  });
+  const lifecycle = createBrowserLifecycle();
+  let socket;
+  t.after(() => lifecycle.cleanup({ socket, server, directory: temp }));
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const profile = path.join(temp, 'chrome');
-  browser = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
+  lifecycle.spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank']);
   const portFile = path.join(profile, 'DevToolsActivePort');
   await until(() => fs.existsSync(portFile), 'Chrome startup');
   const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];

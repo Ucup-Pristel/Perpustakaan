@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { createBrowserLifecycle } = require('./helpers/browser-lifecycle');
 const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '../frontend');
@@ -113,16 +113,12 @@ test('Reader browser regressions', { skip: available ? false : 'Needs Chrome and
       next();
     }); } }] });
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'frontend-browser-'));
-  let browser, socket;
-  t.after(async () => {
-    socket?.close();
-    if (browser && browser.exitCode === null) { browser.kill(); await new Promise(r => browser.once('exit', r)); }
-    await server.close();
-    fs.rmSync(profile, { recursive: true, force: true });
-  });
+  const lifecycle = createBrowserLifecycle();
+  let socket;
+  t.after(() => lifecycle.cleanup({ socket, server, directory: profile }));
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-  browser = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--window-size=1280,900', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
+  lifecycle.spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--window-size=1280,900', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank']);
   const portFile = path.join(profile, 'DevToolsActivePort');
   await until(() => fs.existsSync(portFile), 'Chrome debugging port');
   const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
