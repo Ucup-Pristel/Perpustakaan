@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
@@ -424,8 +425,12 @@ function ReaderSession({ cid, token }) {
       return measured
     })
     if (!changed) return
-    scrollAnchor.current = captureEdgeAnchor(readerRef.current, pageRefs.current)
-    setPageRatios(next)
+    // Keep capture and layout restoration in one commit. A deferred render can
+    // otherwise restore this old anchor after the reader has scrolled elsewhere.
+    flushSync(() => {
+      scrollAnchor.current = captureEdgeAnchor(readerRef.current, pageRefs.current)
+      setPageRatios(next)
+    })
   }, [])
 
   // Metadata berbasis permintaan: hanya halaman yang masuk set ter-mount
