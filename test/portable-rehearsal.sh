@@ -205,6 +205,15 @@ cp "$BACKUP" "$WORK/$(basename "$BACKUP")"
 refused 'sha256 mismatch' restore_as "$DST/edulib" "$WORK/tampered.sql.gz"
 ok "checksum is bound to requested backup, not the filename in its sidecar"
 [ "$(q "$DST" "SELECT count(*) FROM pg_tables WHERE schemaname = 'public';")" = 0 ] || fail "refusals wrote to dst"
+# Even `status` initializes Knex metadata on an empty target. The import
+# runbook must skip it before restore, and the restore guard must reject it.
+dc "$DST" run --rm --no-deps api node scripts/migrate-prod.js status > "$WORK/out" || fail "status on empty destination"
+refused 'is not empty' restore_as "$DST/edulib" "$BACKUP"
+[ "$(q "$DST" "SELECT count(*) FROM pg_tables WHERE schemaname = 'public';")" = 2 ] || fail "status unexpectedly created application tables"
+ok "restore refuses a destination containing only Knex status metadata"
+# Test fixture reset ONLY: these two empty metadata tables were just created
+# in this throwaway project. Production restore never performs this cleanup.
+q "$DST" 'DROP TABLE knex_migrations_lock, knex_migrations;' > /dev/null
 restore_as "$DST/edulib" "$BACKUP" 2> "$WORK/restore.log" || { cat "$WORK/restore.log" >&2; fail "restore"; }
 ok "restore into empty dst succeeded (single transaction)"
 refused 'is not empty' restore_as "$DST/edulib" "$BACKUP"

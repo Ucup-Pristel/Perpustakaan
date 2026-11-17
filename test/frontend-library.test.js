@@ -13,7 +13,9 @@ let BrowserWebSocket = globalThis.WebSocket;
 if (!BrowserWebSocket) {
   try { BrowserWebSocket = require('undici').WebSocket; } catch {}
 }
-const available = chrome && BrowserWebSocket && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+const available = chrome && fs.existsSync(chrome) && BrowserWebSocket && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+// CI must fail if prerequisites disappear; local backend-only runs may skip.
+if (process.env.CI) assert.ok(available, 'Browser regressions are mandatory in CI: install frontend dependencies and provide Chrome/WebSocket (Node 22).');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label, timeout = 15000) {
   const end = Date.now() + timeout;
@@ -315,6 +317,11 @@ test('Library shelves: real data, carousel, filters, responsive and failure stat
     assert.ok(await evaluate('!!document.querySelector("[data-shelf=\\"Baru ditambahkan\\"] button[aria-label=\\"Geser ke kanan\\"]")'));
     await screenshot('tablet-library');
     const pillsScroll = () => evaluate(`document.querySelector('[aria-label="Filter kategori koleksi"]').scrollLeft`);
+    // At 768px the fixture categories can all fit, so no arrow is required.
+    // Keep the tablet geometry checks above, then exercise actual overflow.
+    await viewport(640, 1024);
+    await until(async () => (await sample()).pillsOverflow, 'category strip overflows at the narrower viewport');
+    await until(() => evaluate(`!!document.querySelector('button[aria-label="Geser kategori ke kanan"]')`), 'category overflow control');
     const pillsBefore = await pillsScroll();
     await evaluate(`document.querySelector('button[aria-label="Geser kategori ke kanan"]').click()`);
     await delay(700);

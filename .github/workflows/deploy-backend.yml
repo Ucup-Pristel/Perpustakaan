@@ -11,6 +11,7 @@ on:
       - main
     paths:
       - 'backend/**'
+      - 'frontend/**'
       - 'database/**'
       - 'scripts/**'
       - 'test/**'
@@ -24,6 +25,7 @@ on:
       - main
     paths:
       - 'backend/**'
+      - 'frontend/**'
       - 'database/**'
       - 'scripts/**'
       - 'test/**'
@@ -79,6 +81,20 @@ jobs:
       - name: Install dependencies (dari lockfile)
         run: npm ci
 
+      - name: Install frontend regression dependencies
+        run: npm ci --prefix frontend
+
+      - name: Require browser for Hero, Library and Reader regressions
+        run: |
+          CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          "$CHROME_BIN" --version
+          echo "CHROME_BIN=$CHROME_BIN" >> "$GITHUB_ENV"
+
+      - name: Frontend lint and production build (no deployment)
+        run: |
+          npm run lint --prefix frontend
+          npm run build --prefix frontend
+
       - name: Cek syntax backend
         run: |
           for f in backend/server.js backend/middleware/*.js backend/models/*.js \
@@ -88,8 +104,11 @@ jobs:
           done
 
       - name: Jalankan test
-        run: npm test
+        # Same complete suite as npm test; avoid competing Chromium/PDF renders
+        # and backend migration workers on the runner's limited CPU/memory.
+        run: node --test --test-concurrency=1 test/*.test.js
         env:
+          CI: 'true'
           JWT_SECRET: ci-test-secret-not-used-in-production
           IMPORT_TEST_PG_ADMIN_URL: postgres://postgres:ci-synthetic-only@127.0.0.1:55432/postgres
 

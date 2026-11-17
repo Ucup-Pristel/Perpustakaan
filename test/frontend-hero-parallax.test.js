@@ -7,12 +7,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '../frontend');
 const chrome = process.env.CHROME_BIN || ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(fs.existsSync);
-const available = chrome && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+const available = chrome && fs.existsSync(chrome) && typeof globalThis.WebSocket === 'function' && fs.existsSync(path.join(root, 'node_modules/vite/dist/node/index.js'));
+// CI must fail if prerequisites disappear; local backend-only runs may skip.
+if (process.env.CI) assert.ok(available, 'Browser regressions are mandatory in CI: install frontend dependencies and provide Chrome/WebSocket (Node 22).');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label, timeout = 15000) {
   const end = Date.now() + timeout;
@@ -79,20 +81,50 @@ test('Hero parallax: offline landing, scroll choreography and accessibility', {
       },
     }],
   });
-  let browser, socket;
+  let browser, socket, browserClosed = true;
   t.after(async () => {
-    socket?.close();
-    if (browser && browser.exitCode === null) {
-      browser.kill();
-      await new Promise(resolve => browser.once('exit', resolve));
+    try {
+      if (browser?.pid) {
+        // A browser's `exit` does not mean its profile-writing children exited.
+        // This detached POSIX group belongs only to this test's Chromium.
+        const groupRunning = () => execFileSync('ps', ['-eo', 'pgid=,stat='], { encoding: 'utf8', timeout: 1000 })
+          .trim().split('\n').some(line => {
+            const [group, state] = line.trim().split(/\s+/);
+            // Unreaped zombies cannot write files and must not block cleanup.
+            return Number(group) === browser.pid && !/^[ZX]/.test(state);
+          });
+        if (socket?.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ id: 0, method: 'Browser.close' }));
+        }
+        let stopped = false;
+        for (const signal of [null, 'SIGTERM', 'SIGKILL']) {
+          if (signal) {
+            try { process.kill(-browser.pid, signal); }
+            catch (error) { if (error.code !== 'ESRCH') throw error; }
+          }
+          const deadline = Date.now() + 3000;
+          do {
+            if (browserClosed && !groupRunning()) { stopped = true; break; }
+            await delay(50);
+          } while (Date.now() < deadline);
+          if (stopped) break;
+        }
+        assert.ok(stopped, 'Chromium process group did not stop; retaining its temporary profile');
+      }
+    } finally {
+      socket?.close();
+      await server.close();
     }
-    await server.close();
-    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // Bounded asynchronous retries cover delayed filesystem cleanup, not live
+    // browser writers. Exhausted retries still fail the hook and the test run.
+    await fs.promises.rm(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const profile = path.join(temp, 'chrome');
-  browser = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
+  browser = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore', detached: true });
+  browserClosed = false;
+  browser.once('close', () => { browserClosed = true; });
   const portFile = path.join(profile, 'DevToolsActivePort');
   await until(() => fs.existsSync(portFile), 'Chrome startup');
   const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
